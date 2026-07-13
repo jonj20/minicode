@@ -3,14 +3,9 @@
  * Transforms to Message[] only at the LLM call boundary.
  */
 
-import {
-	type AssistantMessage,
-	type Context,
-	EventStream,
-	streamSimple,
-	type ToolResultMessage,
-	validateToolArguments,
-} from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, Context, ToolResultMessage } from "@earendil-works/pi-ai";
+import { EventStream, validateToolArguments } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type {
 	AgentContext,
 	AgentEvent,

@@ -33,7 +33,10 @@
 			"!**/models.generated.ts",
 			"!**/*.models.ts",
 			"!packages/mom/data/**/*",
-			"!!**/node_modules"
+			"!packages/coding-agent/src/embedded.ts",
+			"!!**/node_modules",
+			"!packages/internal-extensions/src/pi-lens/clients/tree-sitter-client.ts",
+			"!packages/internal-extensions/src/pi-lens/clients/tree-sitter-symbol-extractor.ts"
 		]
 	}
 }

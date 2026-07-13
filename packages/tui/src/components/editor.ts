@@ -562,7 +562,12 @@ export class Editor implements Component, Focusable {
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
 			// Render the line (no side borders, just horizontal lines above and below)
-			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+			// Safety: truncate if line exceeds content width to prevent terminal crash
+			let renderedLine = `${leftPadding}${displayText}${padding}${lineRightPadding}`;
+			if (visibleWidth(renderedLine) > width) {
+				renderedLine = truncateToWidth(renderedLine, width);
+			}
+			result.push(renderedLine);
 		}
 
 		// Render bottom border (with scroll indicator if more content below)
@@ -661,27 +666,6 @@ export class Editor implements Component, Focusable {
 				return;
 			}
 
-			if (kb.matches(data, "tui.input.tab")) {
-				const selected = this.autocompleteList.getSelectedItem();
-				if (selected && this.autocompleteProvider) {
-					this.pushUndoSnapshot();
-					this.lastAction = null;
-					const result = this.autocompleteProvider.applyCompletion(
-						this.state.lines,
-						this.state.cursorLine,
-						this.state.cursorCol,
-						selected,
-						this.autocompletePrefix,
-					);
-					this.state.lines = result.lines;
-					this.state.cursorLine = result.cursorLine;
-					this.setCursorCol(result.cursorCol);
-					this.cancelAutocomplete();
-					if (this.onChange) this.onChange(this.getText());
-				}
-				return;
-			}
-
 			if (kb.matches(data, "tui.select.confirm")) {
 				const selected = this.autocompleteList.getSelectedItem();
 				if (selected && this.autocompleteProvider) {
@@ -708,12 +692,6 @@ export class Editor implements Component, Focusable {
 					}
 				}
 			}
-		}
-
-		// Tab - trigger completion
-		if (kb.matches(data, "tui.input.tab") && !this.autocompleteState) {
-			this.handleTabCompletion();
-			return;
 		}
 
 		// Deletion actions
@@ -2097,26 +2075,26 @@ export class Editor implements Component, Focusable {
 		this.requestAutocomplete({ force: false, explicitTab });
 	}
 
-	private handleTabCompletion(): void {
-		if (!this.autocompleteProvider) return;
+	// private handleTabCompletion(): void {
+	// 	if (!this.autocompleteProvider) return;
 
-		const currentLine = this.state.lines[this.state.cursorLine] || "";
-		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
+	// 	const currentLine = this.state.lines[this.state.cursorLine] || "";
+	// 	const beforeCursor = currentLine.slice(0, this.state.cursorCol);
 
-		if (this.isInSlashCommandContext(beforeCursor) && !beforeCursor.trimStart().includes(" ")) {
-			this.handleSlashCommandCompletion();
-		} else {
-			this.forceFileAutocomplete(true);
-		}
-	}
+	// 	if (this.isInSlashCommandContext(beforeCursor) && !beforeCursor.trimStart().includes(" ")) {
+	// 		this.handleSlashCommandCompletion();
+	// 	} else {
+	// 		this.forceFileAutocomplete(true);
+	// 	}
+	// }
 
-	private handleSlashCommandCompletion(): void {
-		this.requestAutocomplete({ force: false, explicitTab: true });
-	}
+	// private handleSlashCommandCompletion(): void {
+	// 	this.requestAutocomplete({ force: false, explicitTab: true });
+	// }
 
-	private forceFileAutocomplete(explicitTab: boolean = false): void {
-		this.requestAutocomplete({ force: true, explicitTab });
-	}
+	// private forceFileAutocomplete(explicitTab: boolean = false): void {
+	// 	this.requestAutocomplete({ force: true, explicitTab });
+	// }
 
 	private requestAutocomplete(options: { force: boolean; explicitTab: boolean }): void {
 		if (!this.autocompleteProvider) return;

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-AUTH_FILE="$HOME/.pi/agent/auth.json"
-AUTH_BACKUP="$HOME/.pi/agent/auth.json.bak"
+AUTH_FILE="$HOME/.minicode/agent/auth.json"
+AUTH_BACKUP="$HOME/.minicode/agent/auth.json.bak"
 
 # Restore auth.json on exit (success or failure)
 cleanup() {
@@ -73,6 +73,12 @@ unset AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
 unset AWS_CONTAINER_CREDENTIALS_FULL_URI
 unset AWS_WEB_IDENTITY_TOKEN_FILE
 unset BEDROCK_EXTENSIVE_MODEL_TEST
+
+# Build workspace packages that tests depend on (dist/ is gitignored)
+echo "Building workspace packages..."
+cd packages/tui && npm run build && cd ../..
+cd packages/ai && npm run build && cd ../..
+cd packages/agent && npm run build && cd ../..
 
 echo "Running tests without API keys..."
 npm test

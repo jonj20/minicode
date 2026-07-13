@@ -68,6 +68,26 @@ const TOOLS: Record<string, ToolConfig> = {
 			return null;
 		},
 	},
+	rtk: {
+		name: "rtk",
+		repo: "rtk-ai/rtk",
+		binaryName: "rtk",
+		systemBinaryNames: ["rtk"],
+		tagPrefix: "v",
+		getAssetName: (_version, plat, architecture) => {
+			if (plat === "darwin") {
+				const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
+				return `rtk-${archStr}-apple-darwin.tar.gz`;
+			} else if (plat === "linux") {
+				const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
+				return `rtk-${archStr}-unknown-linux-gnu.tar.gz`;
+			} else if (plat === "win32") {
+				const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
+				return `rtk-${archStr}-pc-windows-msvc.zip`;
+			}
+			return null;
+		},
+	},
 };
 
 // Check if a command exists in PATH by trying to run it
@@ -82,7 +102,7 @@ function commandExists(cmd: string): boolean {
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
-export function getToolPath(tool: "fd" | "rg"): string | null {
+export function getToolPath(tool: "fd" | "rg" | "rtk"): string | null {
 	const config = TOOLS[tool];
 	if (!config) return null;
 
@@ -238,7 +258,7 @@ function extractZipArchive(archivePath: string, extractDir: string, assetName: s
 }
 
 // Download and install a tool
-async function downloadTool(tool: "fd" | "rg"): Promise<string> {
+async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	const config = TOOLS[tool];
 	if (!config) throw new Error(`Unknown tool: ${tool}`);
 
@@ -319,11 +339,12 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 const TERMUX_PACKAGES: Record<string, string> = {
 	fd: "fd",
 	rg: "ripgrep",
+	rtk: "rtk",
 };
 
 // Ensure a tool is available, downloading if necessary
 // Returns the path to the tool, or null if unavailable
-export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Promise<string | undefined> {
+export async function ensureTool(tool: "fd" | "rg" | "rtk", silent: boolean = false): Promise<string | undefined> {
 	const existingPath = getToolPath(tool);
 	if (existingPath) {
 		return existingPath;

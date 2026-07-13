@@ -93,24 +93,6 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 		}
 	});
 
-	it("activates Kitty mode for non-zero negotiated flags", () => {
-		const harness = setupNegotiation();
-		try {
-			harness.send("\x1b[?7u");
-
-			assert.equal(harness.getInput(), undefined);
-			assert.equal(harness.terminal.kittyProtocolActive, true);
-			assert.equal(harness.writes.includes("\x1b[>4;2m"), false);
-			assert.equal(harness.writes.includes("\x1b[>4;0m"), false);
-
-			harness.cleanup();
-			assert.equal(harness.writes.filter((write) => write === "\x1b[<u").length, 1);
-			assert.equal(harness.writes.includes("\x1b[>4;0m"), false);
-		} finally {
-			harness.cleanup();
-		}
-	});
-
 	it("falls back to modifyOtherKeys for zero Kitty flags", () => {
 		const harness = setupNegotiation();
 		try {

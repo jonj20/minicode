@@ -62,8 +62,8 @@ describe("theme syntax highlighting", () => {
 	it("colors diff additions and deletions in fenced diff blocks", () => {
 		const lines = highlightCode("-old\n+new\n", "diff");
 
-		expect(lines[0]).toBe("\x1b[38;2;204;102;102m-old\x1b[39m");
-		expect(lines[1]).toBe("\x1b[38;2;181;189;104m+new\x1b[39m");
+		expect(lines[0]).toBe("\x1b[38;2;251;113;133m-old\x1b[39m");
+		expect(lines[1]).toBe("\x1b[38;2;79;214;190m+new\x1b[39m");
 	});
 
 	it("keeps cli-highlight default styled scopes mapped to theme styles", () => {
@@ -71,6 +71,6 @@ describe("theme syntax highlighting", () => {
 			"\x1b[38;2;206;145;120m/foo+/gi\x1b[39m",
 		);
 		expect(highlightCode("@decorator", "python")[0]).toBe("\x1b[38;2;128;128;128m@decorator\x1b[39m");
-		expect(highlightCode("<div></div>", "html")[0]).toContain("\x1b[38;2;86;156;214mdiv\x1b[39m");
+		expect(highlightCode("<div></div>", "html")[0]).toContain("\x1b[38;2;129;140;248mdiv\x1b[39m");
 	});
 });

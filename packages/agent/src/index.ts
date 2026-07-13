@@ -14,6 +14,7 @@ export {
 export {
 	calculateContextTokens,
 	compact,
+	computeCompactionSettings,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	estimateTokens,

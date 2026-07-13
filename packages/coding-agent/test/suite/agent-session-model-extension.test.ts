@@ -81,8 +81,8 @@ describe("AgentSession model and extension characterization", () => {
 	it("throws when setModel is called without configured auth", async () => {
 		const harness = await createHarness({
 			models: [
-				{ id: "faux-1", name: "One", reasoning: true },
-				{ id: "faux-2", name: "Two", reasoning: true },
+				{ id: "faux-1", name: "One", reasoning: true, baseUrl: "https://api.example.com" },
+				{ id: "faux-2", name: "Two", reasoning: true, baseUrl: "https://api.example.com" },
 			],
 			withConfiguredAuth: false,
 		});

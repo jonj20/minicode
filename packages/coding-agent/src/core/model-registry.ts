@@ -28,6 +28,7 @@ import { getAgentDir } from "../config.ts";
 import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
+import { type LocalModelsConfig, probeLocalModels } from "./local-model-prober.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
@@ -213,13 +214,36 @@ const ProviderConfigSchema = Type.Object({
 	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
 });
 
+const LocalEndpointSchema = Type.Object({
+	name: Type.String({ minLength: 1 }),
+	baseUrl: Type.String({ minLength: 1 }),
+	modelsPath: Type.Optional(Type.String()),
+	format: Type.Optional(Type.Union([Type.Literal("openai"), Type.Literal("ollama")])),
+});
+
+const LocalModelsConfigSchema = Type.Object({
+	enabled: Type.Optional(Type.Boolean()),
+	endpoints: Type.Optional(Type.Array(LocalEndpointSchema)),
+});
+
 const ModelsConfigSchema = Type.Object({
 	providers: Type.Record(Type.String(), ProviderConfigSchema),
+	localModels: Type.Optional(LocalModelsConfigSchema),
 });
 
 const validateModelsConfig = Compile(ModelsConfigSchema);
 
 type ModelsConfig = Static<typeof ModelsConfigSchema>;
+
+/** Check if a URL points to localhost (no auth required). */
+export function isLocalUrl(url: string): boolean {
+	try {
+		const { hostname } = new URL(url);
+		return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0";
+	} catch {
+		return false;
+	}
+}
 
 function formatValidationPath(error: TLocalizedValidationError): string {
 	if (error.keyword === "required") {
@@ -265,11 +289,13 @@ interface CustomModelsResult {
 	overrides: Map<string, ProviderOverride>;
 	/** Per-model overrides: provider -> modelId -> override */
 	modelOverrides: Map<string, Map<string, ModelOverride>>;
+	/** Local model auto-discovery config */
+	localModels: LocalModelsConfig | undefined;
 	error: string | undefined;
 }
 
 function emptyCustomModelsResult(error?: string): CustomModelsResult {
-	return { models: [], overrides: new Map(), modelOverrides: new Map(), error };
+	return { models: [], overrides: new Map(), modelOverrides: new Map(), localModels: undefined, error };
 }
 
 function mergeCompat(
@@ -355,21 +381,33 @@ export class ModelRegistry {
 	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private loadError: string | undefined = undefined;
+	private localModelsConfig: LocalModelsConfig | undefined = undefined;
+	private localModelsProbed = false;
 	readonly authStorage: AuthStorage;
 	private modelsJsonPath: string | undefined;
+	private projectModelsJsonPath: string | undefined;
 
-	private constructor(authStorage: AuthStorage, modelsJsonPath: string | undefined) {
+	private constructor(
+		authStorage: AuthStorage,
+		modelsJsonPath: string | undefined,
+		projectModelsJsonPath: string | undefined,
+	) {
 		this.authStorage = authStorage;
 		this.modelsJsonPath = modelsJsonPath ? normalizePath(modelsJsonPath) : undefined;
+		this.projectModelsJsonPath = projectModelsJsonPath ? normalizePath(projectModelsJsonPath) : undefined;
 		this.loadModels();
 	}
 
-	static create(authStorage: AuthStorage, modelsJsonPath: string = join(getAgentDir(), "models.json")): ModelRegistry {
-		return new ModelRegistry(authStorage, modelsJsonPath);
+	static create(authStorage: AuthStorage, modelsJsonPath?: string, projectModelsJsonPath?: string): ModelRegistry {
+		return new ModelRegistry(
+			authStorage,
+			modelsJsonPath ?? join(getAgentDir(), "models.json"),
+			projectModelsJsonPath,
+		);
 	}
 
 	static inMemory(authStorage: AuthStorage): ModelRegistry {
-		return new ModelRegistry(authStorage, undefined);
+		return new ModelRegistry(authStorage, undefined, undefined);
 	}
 
 	/**
@@ -392,6 +430,44 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Probe local LLM endpoints and merge discovered models into the registry.
+	 * Safe to call multiple times — probing only runs once.
+	 * Returns the number of local models discovered.
+	 *
+	 * Probes:
+	 * 1. Default local endpoints (llama.cpp, Ollama, LM Studio, etc.)
+	 * 2. Endpoints from models.json "localModels.endpoints"
+	 * 3. Endpoints from models.json "providers.*.baseUrl" (for custom servers)
+	 */
+	async probeLocalModels(): Promise<number> {
+		if (this.localModelsProbed) return 0;
+		this.localModelsProbed = true;
+
+		try {
+			// Collect provider endpoints from models with localhost URLs
+			const providerEndpoints: { name: string; baseUrl: string }[] = [];
+			const seenProviderUrls = new Set<string>();
+			for (const model of this.models) {
+				if (model.baseUrl && isLocalUrl(model.baseUrl) && !seenProviderUrls.has(model.baseUrl)) {
+					seenProviderUrls.add(model.baseUrl);
+					providerEndpoints.push({ name: model.provider, baseUrl: model.baseUrl });
+				}
+			}
+
+			const localModels = await probeLocalModels(this.localModelsConfig, providerEndpoints);
+			if (localModels.length > 0) {
+				// Add local models at the end, avoiding duplicates
+				const existingKeys = new Set(this.models.map((m) => `${m.provider}:${m.id}`));
+				const newModels = localModels.filter((m) => !existingKeys.has(`${m.provider}:${m.id}`));
+				this.models.push(...newModels);
+			}
+			return localModels.length;
+		} catch {
+			return 0;
+		}
+	}
+
+	/**
 	 * Get any error from loading models.json (undefined if no error).
 	 */
 	getError(): string | undefined {
@@ -399,21 +475,23 @@ export class ModelRegistry {
 	}
 
 	private loadModels(): void {
-		// Load custom models and overrides from models.json
-		const {
-			models: customModels,
-			overrides,
-			modelOverrides,
-			error,
-		} = this.modelsJsonPath ? this.loadCustomModels(this.modelsJsonPath) : emptyCustomModelsResult();
+		// Load global models.json (~/.minicode/agent/models.json)
+		const globalResult = this.modelsJsonPath ? this.loadCustomModels(this.modelsJsonPath) : emptyCustomModelsResult();
 
-		if (error) {
-			this.loadError = error;
-			// Keep built-in models even if custom models failed to load
-		}
+		// Load project-level models.json (.minicode/models.json), overrides global
+		const projectResult = this.projectModelsJsonPath
+			? this.loadCustomModels(this.projectModelsJsonPath)
+			: emptyCustomModelsResult();
+
+		this.loadError = globalResult.error ?? projectResult.error;
+
+		// Merge: project-level overrides win
+		const overrides = new Map([...(globalResult.overrides ?? []), ...(projectResult.overrides ?? [])]);
+		const modelOverrides = new Map([...(globalResult.modelOverrides ?? []), ...(projectResult.modelOverrides ?? [])]);
+		const allCustomModels = [...(globalResult.models ?? []), ...(projectResult.models ?? [])];
 
 		const builtInModels = this.loadBuiltInModels(overrides, modelOverrides);
-		let combined = this.mergeCustomModels(builtInModels, customModels);
+		let combined = this.mergeCustomModels(builtInModels, allCustomModels);
 
 		// Let OAuth providers modify their models (e.g., update baseUrl)
 		for (const oauthProvider of this.authStorage.getOAuthProviders()) {
@@ -424,6 +502,9 @@ export class ModelRegistry {
 		}
 
 		this.models = combined;
+
+		// Store localModels config for async probing
+		this.localModelsConfig = globalResult.localModels ?? projectResult.localModels;
 	}
 
 	/** Load built-in models and apply provider/model overrides */
@@ -517,7 +598,13 @@ export class ModelRegistry {
 				}
 			}
 
-			return { models: this.parseModels(config), overrides, modelOverrides, error: undefined };
+			return {
+				models: this.parseModels(config),
+				overrides,
+				modelOverrides,
+				localModels: config.localModels,
+				error: undefined,
+			};
 		} catch (error) {
 			if (error instanceof SyntaxError) {
 				return emptyCustomModelsResult(`Failed to parse models.json: ${error.message}\n\nFile: ${modelsJsonPath}`);
@@ -656,6 +743,9 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
+		// Localhost models (e.g. Ollama, vLLM, llama.cpp) don't need auth
+		if (model.baseUrl && isLocalUrl(model.baseUrl)) return true;
+
 		const providerApiKey = this.providerRequestConfigs.get(model.provider)?.apiKey;
 		return (
 			this.authStorage.hasAuth(model.provider) ||
@@ -711,7 +801,9 @@ export class ModelRegistry {
 							`API key for provider "${model.provider}"`,
 							providerEnv,
 						)
-					: undefined);
+					: model.baseUrl && isLocalUrl(model.baseUrl)
+						? "unused"
+						: undefined);
 
 			const providerHeaders = resolveHeadersOrThrow(
 				providerConfig?.headers,

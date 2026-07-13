@@ -11,7 +11,7 @@ import {
 import chalk from "chalk";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
-import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
+import { getCustomThemesDir, getThemesDir, hasEmbeddedData, readEmbeddedTheme } from "../../../config.ts";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
@@ -115,6 +115,7 @@ export type ThemeColor =
 	| "muted"
 	| "dim"
 	| "text"
+	| "softWhite"
 	| "thinkingText"
 	| "userMessageText"
 	| "customMessageText"
@@ -429,13 +430,22 @@ let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
 
 function getBuiltinThemes(): Record<string, ThemeJson> {
 	if (!BUILTIN_THEMES) {
-		const themesDir = getThemesDir();
-		const darkPath = path.join(themesDir, "dark.json");
-		const lightPath = path.join(themesDir, "light.json");
-		BUILTIN_THEMES = {
-			dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
-			light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
-		};
+		if (hasEmbeddedData) {
+			const darkContent = readEmbeddedTheme("dark.json");
+			const lightContent = readEmbeddedTheme("light.json");
+			BUILTIN_THEMES = {
+				dark: darkContent ? (JSON.parse(darkContent) as ThemeJson) : ({} as ThemeJson),
+				light: lightContent ? (JSON.parse(lightContent) as ThemeJson) : ({} as ThemeJson),
+			};
+		} else {
+			const themesDir = getThemesDir();
+			const darkPath = path.join(themesDir, "dark.json");
+			const lightPath = path.join(themesDir, "light.json");
+			BUILTIN_THEMES = {
+				dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
+				light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
+			};
+		}
 	}
 	return BUILTIN_THEMES;
 }
@@ -450,7 +460,6 @@ export interface ThemeInfo {
 }
 
 export function getAvailableThemesWithPaths(): ThemeInfo[] {
-	const themesDir = getThemesDir();
 	const result: ThemeInfo[] = [];
 	const seen = new Set<string>();
 	const addTheme = (themeInfo: ThemeInfo) => {
@@ -462,8 +471,15 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 	};
 
 	// Built-in themes
-	for (const name of Object.keys(getBuiltinThemes())) {
-		addTheme({ name, path: path.join(themesDir, `${name}.json`) });
+	if (hasEmbeddedData) {
+		for (const name of Object.keys(getBuiltinThemes())) {
+			addTheme({ name, path: undefined });
+		}
+	} else {
+		const themesDir = getThemesDir();
+		for (const name of Object.keys(getBuiltinThemes())) {
+			addTheme({ name, path: path.join(themesDir, `${name}.json`) });
+		}
 	}
 
 	// Custom themes

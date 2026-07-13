@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import chalk from "chalk";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME, getPackageDir, isBunBinary } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 
@@ -400,9 +400,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const cliEnabledPrompts = getEnabledPaths(cliExtensionPaths.prompts);
 		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes);
 
+		const internalExtDir = isBunBinary ? undefined : join(getPackageDir(), "..", "internal-extensions");
+		const hasInternalExts = internalExtDir && existsSync(internalExtDir);
+		const internalExtPath = hasInternalExts ? internalExtDir : undefined;
+
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
-			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
+			: this.mergePaths(
+					this.mergePaths(cliEnabledExtensions, enabledExtensions),
+					internalExtPath ? [internalExtPath] : [],
+				);
 
 		const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);
 		for (const p of this.additionalExtensionPaths) {
@@ -499,9 +506,17 @@ export class DefaultResourceLoader implements ResourceLoader {
 		});
 		const enabledExtensions = resolvedPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
 		const cliEnabledExtensions = cliExtensionPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
+
+		const internalExtDir = isBunBinary ? undefined : join(getPackageDir(), "..", "internal-extensions");
+		const hasInternalExts = internalExtDir && existsSync(internalExtDir);
+		const internalExtPath = hasInternalExts ? internalExtDir : undefined;
+
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
-			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
+			: this.mergePaths(
+					this.mergePaths(cliEnabledExtensions, enabledExtensions),
+					internalExtPath ? [internalExtPath] : [],
+				);
 		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
@@ -559,6 +574,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const orderedExtensions = extensionPaths
 			.map((path) => loadedByPath.get(this.resolveExtensionLoadPath(path)))
 			.filter((extension): extension is Extension => extension !== undefined);
+		// Include non-path-based extensions (e.g., internal-extensions:embedded in bun binary mode)
+		for (const ext of remainingExtensions.extensions) {
+			if (!orderedExtensions.includes(ext)) {
+				orderedExtensions.push(ext);
+			}
+		}
 		orderedExtensions.push(...inlineExtensions);
 
 		const extensionsResult: LoadExtensionsResult = {

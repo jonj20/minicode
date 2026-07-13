@@ -8,6 +8,7 @@ import {
 	type Focusable,
 	getKeybindings,
 	Input,
+	matchesKey,
 	Spacer,
 	Text,
 	truncateToWidth,
@@ -18,7 +19,7 @@ import type { SessionInfo, SessionListProgress } from "../../../core/session-man
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint, keyText } from "./keybinding-hints.ts";
+import { keyHint, keyText, rawKeyHint } from "./keybinding-hints.ts";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
 
 type SessionScope = "current" | "all";
@@ -166,8 +167,7 @@ class SessionSelectorHeader implements Component {
 		} else {
 			const pathState = this.showPath ? "(on)" : "(off)";
 			const sep = theme.fg("muted", " · ");
-			const hint1 =
-				keyHint("tui.input.tab", "scope") + sep + theme.fg("muted", 're:<pattern> regex · "phrase" exact');
+			const hint1 = rawKeyHint("tab", "scope") + sep + theme.fg("muted", 're:<pattern> regex · "phrase" exact');
 			const hint2Parts = [
 				keyHint("app.session.toggleSort", "sort"),
 				keyHint("app.session.toggleNamedFilter", "named"),
@@ -548,7 +548,7 @@ class SessionList implements Component, Focusable {
 			return;
 		}
 
-		if (kb.matches(keyData, "tui.input.tab")) {
+		if (matchesKey(keyData, "tab")) {
 			if (this.onToggleScope) {
 				this.onToggleScope();
 			}

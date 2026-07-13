@@ -82,6 +82,7 @@ describe("ExtensionRunner", () => {
 		hasPendingMessages: () => false,
 		shutdown: () => {},
 		getContextUsage: () => undefined,
+		getContextBreakdown: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
 	};
@@ -350,7 +351,7 @@ describe("ExtensionRunner", () => {
 			fs.writeFileSync(path.join(extensionsDir, "tool-a.ts"), toolCode("tool_a"));
 			fs.writeFileSync(path.join(extensionsDir, "tool-b.ts"), toolCode("tool_b"));
 
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, { skipInternal: true });
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 			const tools = runner.getAllRegisteredTools();
 
@@ -386,7 +387,7 @@ describe("ExtensionRunner", () => {
 			fs.writeFileSync(path.join(extensionsDir, "a-first.ts"), first);
 			fs.writeFileSync(path.join(extensionsDir, "b-second.ts"), second);
 
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, { skipInternal: true });
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 			const tools = runner.getAllRegisteredTools();
 
@@ -408,7 +409,7 @@ describe("ExtensionRunner", () => {
 			fs.writeFileSync(path.join(extensionsDir, "cmd-a.ts"), cmdCode("cmd-a"));
 			fs.writeFileSync(path.join(extensionsDir, "cmd-b.ts"), cmdCode("cmd-b"));
 
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, { skipInternal: true });
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 			const commands = runner.getRegisteredCommands();
 
@@ -453,7 +454,7 @@ describe("ExtensionRunner", () => {
 			fs.writeFileSync(path.join(extensionsDir, "cmd-a.ts"), cmdCode("First command"));
 			fs.writeFileSync(path.join(extensionsDir, "cmd-b.ts"), cmdCode("Second command"));
 
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, { skipInternal: true });
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 			const commands = runner.getRegisteredCommands();
 			const diagnostics = runner.getCommandDiagnostics();
@@ -560,7 +561,7 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
-	describe("message renderers", () => {
+	describe("message and entry renderers", () => {
 		it("gets message renderer by type", async () => {
 			const extCode = `
 				export default function(pi) {
@@ -577,6 +578,21 @@ describe("ExtensionRunner", () => {
 
 			const missing = runner.getMessageRenderer("not-exists");
 			expect(missing).toBeUndefined();
+		});
+
+		it("gets entry renderer by type", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.registerEntryRenderer("my-entry", (entry, options, theme) => null);
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "entry-renderer.ts"), extCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			expect(runner.getEntryRenderer("my-entry")).toBeDefined();
+			expect(runner.getEntryRenderer("not-exists")).toBeUndefined();
 		});
 	});
 
@@ -674,7 +690,7 @@ describe("ExtensionRunner", () => {
 			fs.writeFileSync(path.join(extensionsDir, "before-agent-start-1.ts"), extCode1);
 			fs.writeFileSync(path.join(extensionsDir, "before-agent-start-2.ts"), extCode2);
 
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, { skipInternal: true });
 			expect(result.errors).toEqual([]);
 			expect(result.extensions).toHaveLength(2);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
@@ -884,7 +900,7 @@ describe("ExtensionRunner", () => {
 			`;
 			fs.writeFileSync(path.join(extensionsDir, "handler.ts"), extCode);
 
-			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, { skipInternal: true });
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 
 			expect(runner.hasHandlers("tool_call")).toBe(true);

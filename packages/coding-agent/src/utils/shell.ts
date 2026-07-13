@@ -21,9 +21,34 @@ function getBashShellConfig(shell: string): ShellConfig {
 	return isLegacyWslBashPath(shell) ? { shell, args: ["-s"], commandTransport: "stdin" } : { shell, args: ["-c"] };
 }
 
+function findGitBashViaGitCommand(): string | null {
+	if (process.platform !== "win32") {
+		return null;
+	}
+	try {
+		const result = spawnSync("git", ["--exec-path"], {
+			encoding: "utf-8",
+			timeout: 5000,
+			windowsHide: true,
+		});
+		if (result.status === 0 && result.stdout) {
+			const execPath = result.stdout.trim();
+			const gitDir = execPath.replace(/[/\\]lib[/\\]exec[\\/]?$/, "");
+			const candidate = `${gitDir}\\bin\\bash.exe`;
+			if (existsSync(candidate)) {
+				return candidate;
+			}
+		}
+	} catch {
+		// Ignore errors
+	}
+	return null;
+}
+
 function findBashOnPath(): string | null {
 	if (process.platform === "win32") {
 		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
+		// Skip WSL bash (C:\Windows\System32\bash.exe) which requires a WSL distribution
 		try {
 			const result = spawnSync("where", ["bash.exe"], {
 				encoding: "utf-8",
@@ -31,9 +56,11 @@ function findBashOnPath(): string | null {
 				windowsHide: true,
 			});
 			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && existsSync(firstMatch)) {
-					return firstMatch;
+				const candidates = result.stdout.trim().split(/\r?\n/);
+				for (const candidate of candidates) {
+					if (candidate && existsSync(candidate) && !isLegacyWslBashPath(candidate)) {
+						return candidate;
+					}
 				}
 			}
 		} catch {
@@ -74,8 +101,10 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	if (process.platform === "win32") {
-		// 2. Try Git Bash in known locations
+		// 2. Try Git Bash and other bash installations in known locations
 		const paths: string[] = [];
+
+		// Git for Windows - standard locations
 		const programFiles = process.env.ProgramFiles;
 		if (programFiles) {
 			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
@@ -83,6 +112,22 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		const programFilesX86 = process.env["ProgramFiles(x86)"];
 		if (programFilesX86) {
 			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
+		}
+
+		// Git for Windows - non-standard locations (common custom install paths)
+		const localAppData = process.env.LOCALAPPDATA;
+		if (localAppData) {
+			paths.push(`${localAppData}\\Programs\\Git\\bin\\bash.exe`);
+		}
+		const userProfile = process.env.USERPROFILE;
+		if (userProfile) {
+			paths.push(`${userProfile}\\AppData\\Local\\Programs\\Git\\bin\\bash.exe`);
+		}
+
+		// Try to find Git via git command (handles custom install locations)
+		const gitBash = findGitBashViaGitCommand();
+		if (gitBash) {
+			return getBashShellConfig(gitBash);
 		}
 
 		for (const path of paths) {
@@ -97,12 +142,18 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 			return getBashShellConfig(bashOnPath);
 		}
 
+		const searchedPaths = [...paths];
+		if (customShellPath) {
+			searchedPaths.unshift(customShellPath);
+		}
+
 		throw new Error(
 			`No bash shell found. Options:\n` +
 				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
-				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
-				"  3. Set shellPath in settings.json\n\n" +
-				`Searched Git Bash in:\n${paths.map((p) => `  ${p}`).join("\n")}`,
+				`  2. Install MSYS2: https://www.msys2.org/\n` +
+				`  3. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
+				"  4. Set shellPath in settings.json\n\n" +
+				`Searched paths:\n${searchedPaths.map((p) => `  ${p}`).join("\n")}`,
 		);
 	}
 

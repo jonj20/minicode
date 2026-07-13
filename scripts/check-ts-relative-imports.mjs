@@ -3,6 +3,8 @@ import { join } from "node:path";
 import ts from "typescript";
 
 const ignoredDirectories = new Set([".git", "coverage", "dist", "node_modules"]);
+// internal-extensions uses .js extension imports (valid TS pattern: TS resolves .js -> .ts)
+const ignoredCheckDirectories = new Set(["internal-extensions"]);
 const files = [];
 
 function collectTypescriptFiles(directory) {
@@ -35,6 +37,9 @@ const failures = [];
 collectTypescriptFiles(".");
 
 for (const file of files.sort()) {
+	// Skip files in directories excluded from this check
+	const normalizedPath = file.replace(/\\/g, "/");
+	if ([...ignoredCheckDirectories].some((d) => normalizedPath.includes("/" + d + "/") || normalizedPath.startsWith(d + "/"))) continue;
 	const sourceText = readFileSync(file, "utf8");
 	const sourceFile = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true);
 

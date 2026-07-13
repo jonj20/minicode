@@ -16,6 +16,7 @@ export { Image, type ImageOptions, type ImageTheme } from "./components/image.ts
 export { Input } from "./components/input.ts";
 export { Loader, type LoaderIndicatorOptions } from "./components/loader.ts";
 export { type DefaultTextStyle, Markdown, type MarkdownOptions, type MarkdownTheme } from "./components/markdown.ts";
+export { ScrollBox } from "./components/scroll-box.ts";
 export {
 	type SelectItem,
 	SelectList,
@@ -24,6 +25,13 @@ export {
 	type SelectListTruncatePrimaryContext,
 } from "./components/select-list.ts";
 export { type SettingItem, SettingsList, type SettingsListTheme } from "./components/settings-list.ts";
+export {
+	SidebarComponent,
+	type SidebarContent,
+	type SidebarItem,
+	type SidebarSection,
+	type SidebarTheme,
+} from "./components/sidebar.ts";
 export { Spacer } from "./components/spacer.ts";
 export { Text } from "./components/text.ts";
 export { TruncatedText } from "./components/truncated-text.ts";
@@ -60,7 +68,7 @@ export {
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
-export { ProcessTerminal, type Terminal } from "./terminal.ts";
+export { isLegacyWindowsConsole, ProcessTerminal, type Terminal } from "./terminal.ts";
 // Terminal colors
 export {
 	parseOsc11BackgroundColor,

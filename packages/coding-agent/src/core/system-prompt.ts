@@ -22,6 +22,8 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** When true, produce a shorter system prompt for small-context models. */
+	compactPrompt?: boolean;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -92,6 +94,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const toolsList =
 		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
 
+	// Compact prompt mode: skip detailed docs and use shorter opening
+	const compactPrompt = options.compactPrompt ?? false;
+
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
 	const guidelinesSet = new Set<string>();
@@ -127,7 +132,18 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	const promptLines: string[] = [];
+
+	if (compactPrompt) {
+		promptLines.push(`You are pi, a coding assistant. You help by reading files, running commands, editing code, and writing files.
+
+Available tools:
+${toolsList}
+
+Guidelines:
+${guidelines}`);
+	} else {
+		promptLines.push(`You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
 ${toolsList}
@@ -144,7 +160,10 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 - When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
 - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
 - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`);
+	}
+
+	let prompt = promptLines.join("");
 
 	if (appendSection) {
 		prompt += appendSection;

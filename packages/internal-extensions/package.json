@@ -1,0 +1,47 @@
+{
+  "name": "extensions-internal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bundled PI extensions for context efficiency (P1-P6 principles)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsgo -p tsconfig.json"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "dependencies": {
+    "@ast-grep/cli": "0.44.0",
+    "@ast-grep/napi": "0.44.0",
+    "@earendil-works/pi-extension-types": "*",
+    "@ff-labs/fff-node": "0.9.6",
+    "@modelcontextprotocol/ext-apps": "1.7.4",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "croner": "10.0.1",
+    "js-yaml": "4.3.0",
+    "minimatch": "10.2.5",
+    "nanoid": "5.1.16",
+    "open": "11.0.0",
+    "recheck": "4.5.0",
+    "vscode-jsonrpc": "9.0.0",
+    "web-tree-sitter": "0.25.10",
+    "zod": "3.25.76"
+  }
+}

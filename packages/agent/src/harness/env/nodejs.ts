@@ -28,6 +28,22 @@ import {
 	toError,
 } from "../types.ts";
 
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
+
+function resolveTimeoutMs(timeout: number | undefined): Result<number | undefined, ExecutionError> {
+	if (timeout === undefined) return ok(undefined);
+	if (!Number.isFinite(timeout) || timeout <= 0) {
+		return err(new ExecutionError("timeout", "Invalid timeout: must be a finite number of seconds"));
+	}
+
+	const timeoutMs = timeout * 1000;
+	if (timeoutMs > MAX_TIMEOUT_MS) {
+		return err(new ExecutionError("timeout", `Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`));
+	}
+	return ok(timeoutMs);
+}
+
 function resolvePath(cwd: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(cwd, path);
 }
@@ -49,8 +65,12 @@ function fileInfoFromStats(
 ): Result<FileInfo, FileError> {
 	const kind = fileKindFromStats(stats);
 	if (!kind) return err(new FileError("invalid", "Unsupported file type", path));
+	// Handle both / and \ path separators for cross-platform compatibility
+	const normalized = path.replace(/[/\\]+$/, "");
+	const lastSeparator = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+	const name = lastSeparator === -1 ? normalized : normalized.slice(lastSeparator + 1);
 	return ok({
-		name: path.replace(/\/+$/, "").split("/").pop() ?? path,
+		name,
 		path,
 		kind,
 		size: stats.size,
@@ -140,8 +160,28 @@ async function findBashOnPath(): Promise<string | null> {
 			? await runCommand("where", ["bash.exe"], 5000)
 			: await runCommand("which", ["bash"], 5000);
 	if (result.status !== 0 || !result.stdout) return null;
-	const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-	return firstMatch && (await pathExists(firstMatch)) ? firstMatch : null;
+	const candidates = result.stdout.trim().split(/\r?\n/);
+	for (const candidate of candidates) {
+		if (candidate && (await pathExists(candidate)) && !isLegacyWslBashPath(candidate)) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
+async function findGitBashViaGitCommand(): Promise<string | null> {
+	if (process.platform !== "win32") {
+		return null;
+	}
+	const result = await runCommand("git", ["--exec-path"], 5000);
+	if (result.status !== 0 || !result.stdout) return null;
+	const execPath = result.stdout.trim();
+	const gitDir = execPath.replace(/[/\\]lib[/\\]exec[\\/]?$/, "");
+	const candidate = `${gitDir}\\bin\\bash.exe`;
+	if (await pathExists(candidate)) {
+		return candidate;
+	}
+	return null;
 }
 
 interface ShellConfig {
@@ -164,14 +204,29 @@ async function getShellConfig(customShellPath?: string): Promise<Result<ShellCon
 		if (await pathExists(customShellPath)) {
 			return ok(getBashShellConfig(customShellPath));
 		}
-		return err(new ExecutionError("shell_unavailable", `Custom shell path not found: ${customShellPath}`));
+		return err(new ExecutionError("shell_unavailable", `Shell not found at: ${customShellPath}`));
 	}
 	if (process.platform === "win32") {
 		const candidates: string[] = [];
+
+		// Git for Windows - standard locations
 		const programFiles = process.env.ProgramFiles;
 		if (programFiles) candidates.push(`${programFiles}\\Git\\bin\\bash.exe`);
 		const programFilesX86 = process.env["ProgramFiles(x86)"];
 		if (programFilesX86) candidates.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
+
+		// Git for Windows - non-standard locations (common custom install paths)
+		const localAppData = process.env.LOCALAPPDATA;
+		if (localAppData) candidates.push(`${localAppData}\\Programs\\Git\\bin\\bash.exe`);
+		const userProfile = process.env.USERPROFILE;
+		if (userProfile) candidates.push(`${userProfile}\\AppData\\Local\\Programs\\Git\\bin\\bash.exe`);
+
+		// Try to find Git via git command (handles custom install locations)
+		const gitBash = await findGitBashViaGitCommand();
+		if (gitBash) {
+			return ok(getBashShellConfig(gitBash));
+		}
+
 		for (const candidate of candidates) {
 			if (await pathExists(candidate)) {
 				return ok(getBashShellConfig(candidate));
@@ -181,7 +236,16 @@ async function getShellConfig(customShellPath?: string): Promise<Result<ShellCon
 		if (bashOnPath) {
 			return ok(getBashShellConfig(bashOnPath));
 		}
-		return err(new ExecutionError("shell_unavailable", "No bash shell found"));
+
+		// Build helpful error message with searched paths
+		const searchedPaths = [...candidates];
+		if (customShellPath) searchedPaths.unshift(customShellPath);
+		return err(
+			new ExecutionError(
+				"shell_unavailable",
+				`No bash shell found. Searched paths:\n${searchedPaths.map((p) => `  ${p}`).join("\n")}`,
+			),
+		);
 	}
 
 	if (await pathExists("/bin/bash")) {
@@ -258,6 +322,9 @@ export class NodeExecutionEnv implements ExecutionEnv {
 		},
 	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		if (options?.abortSignal?.aborted) return err(new ExecutionError("aborted", "aborted"));
+		const timeoutMsResult = resolveTimeoutMs(options?.timeout);
+		if (!timeoutMsResult.ok) return err(timeoutMsResult.error);
+		const timeoutMs = timeoutMsResult.value;
 
 		const cwd = options?.cwd ? resolvePath(this.cwd, options.cwd) : this.cwd;
 		const shellConfig = await getShellConfig(this.shellPath);
@@ -310,13 +377,13 @@ export class NodeExecutionEnv implements ExecutionEnv {
 			}
 
 			timeoutId =
-				typeof options?.timeout === "number"
+				timeoutMs !== undefined
 					? setTimeout(() => {
 							timedOut = true;
 							if (child?.pid) {
 								killProcessTree(child.pid);
 							}
-						}, options.timeout * 1000)
+						}, timeoutMs)
 					: undefined;
 
 			if (options?.abortSignal) {

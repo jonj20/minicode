@@ -42,6 +42,7 @@ export interface FauxModelDefinition {
 	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 	contextWindow?: number;
 	maxTokens?: number;
+	baseUrl?: string;
 }
 
 export type FauxContentBlock = TextContent | ThinkingContent | ToolCall;
@@ -431,7 +432,7 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 		name: definition.name ?? definition.id,
 		api,
 		provider,
-		baseUrl: DEFAULT_BASE_URL,
+		baseUrl: definition.baseUrl ?? DEFAULT_BASE_URL,
 		reasoning: definition.reasoning ?? false,
 		input: definition.input ?? ["text", "image"],
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

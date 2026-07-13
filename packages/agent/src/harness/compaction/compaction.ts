@@ -114,6 +114,19 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	keepRecentTokens: 20000,
 };
 
+/**
+ * Compute context-window-aware compaction settings proportional to the model's context window.
+ * For small models (8K-16K), minimizes reserve/keep to maximize space for compressed history.
+ * For large models (100K+), caps at the default values.
+ */
+export function computeCompactionSettings(contextWindow: number): Required<CompactionSettings> {
+	return {
+		enabled: true,
+		reserveTokens: Math.min(16384, Math.max(1500, Math.floor(contextWindow * 0.15))),
+		keepRecentTokens: Math.min(20000, Math.max(2000, Math.floor(contextWindow * 0.25))),
+	};
+}
+
 /** Calculate total context tokens from provider usage. */
 export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
@@ -202,61 +215,61 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 
-const ESTIMATED_IMAGE_CHARS = 4800;
-
-function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
-	if (typeof content === "string") {
-		return content.length;
-	}
-
-	let chars = 0;
-	for (const block of content) {
-		if (block.type === "text" && block.text) {
-			chars += block.text.length;
-		} else if (block.type === "image") {
-			chars += ESTIMATED_IMAGE_CHARS;
-		}
-	}
-	return chars;
+/** Estimate tokens for a string, accounting for CJK characters (~2 tok/char) vs ASCII (~0.25 tok/char). */
+function estimateStringTokens(text: string): number {
+	const cjkChars = (text.match(/[\u4E00-\u9FFF\u3000-\u303F\uFF00-\uFFEF]/g) || []).length;
+	const nonCjkChars = text.length - cjkChars;
+	return Math.ceil(cjkChars * 2 + nonCjkChars / 4);
 }
 
-/** Estimate token count for one message using a conservative character heuristic. */
-export function estimateTokens(message: AgentMessage): number {
-	let chars = 0;
+function estimateTextAndImageTokens(content: string | Array<{ type: string; text?: string }>): number {
+	if (typeof content === "string") {
+		return estimateStringTokens(content);
+	}
 
+	let tokens = 0;
+	for (const block of content) {
+		if (block.type === "text" && block.text) {
+			tokens += estimateStringTokens(block.text);
+		} else if (block.type === "image") {
+			tokens += 1200;
+		}
+	}
+	return tokens;
+}
+
+/** Estimate token count for one message. CJK-aware for better accuracy on local models. */
+export function estimateTokens(message: AgentMessage): number {
 	switch (message.role) {
 		case "user": {
-			chars = estimateTextAndImageContentChars(
+			return estimateTextAndImageTokens(
 				(message as { content: string | Array<{ type: string; text?: string }> }).content,
 			);
-			return Math.ceil(chars / 4);
 		}
 		case "assistant": {
+			let tokens = 0;
 			const assistant = message as AssistantMessage;
 			for (const block of assistant.content) {
 				if (block.type === "text") {
-					chars += block.text.length;
+					tokens += estimateStringTokens(block.text);
 				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
+					tokens += estimateStringTokens(block.thinking);
 				} else if (block.type === "toolCall") {
-					chars += block.name.length + safeJsonStringify(block.arguments).length;
+					tokens += estimateStringTokens(block.name) + estimateStringTokens(safeJsonStringify(block.arguments));
 				}
 			}
-			return Math.ceil(chars / 4);
+			return tokens;
 		}
 		case "custom":
 		case "toolResult": {
-			chars = estimateTextAndImageContentChars(message.content);
-			return Math.ceil(chars / 4);
+			return estimateTextAndImageTokens(message.content);
 		}
 		case "bashExecution": {
-			chars = message.command.length + message.output.length;
-			return Math.ceil(chars / 4);
+			return estimateStringTokens(message.command) + estimateStringTokens(message.output);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
-			chars = message.summary.length;
-			return Math.ceil(chars / 4);
+			return estimateStringTokens(message.summary);
 		}
 	}
 
@@ -653,9 +666,9 @@ export async function compact(
 	let summary: string;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		const [historyResult, turnPrefixResult] = await Promise.all([
+		const historyResult =
 			messagesToSummarize.length > 0
-				? generateSummary(
+				? await generateSummary(
 						messagesToSummarize,
 						models,
 						model,
@@ -665,10 +678,16 @@ export async function compact(
 						previousSummary,
 						thinkingLevel,
 					)
-				: Promise.resolve(ok<string, CompactionError>("No prior history.")),
-			generateTurnPrefixSummary(turnPrefixMessages, models, model, settings.reserveTokens, signal, thinkingLevel),
-		]);
+				: ok<string, CompactionError>("No prior history.");
 		if (!historyResult.ok) return err(historyResult.error);
+		const turnPrefixResult = await generateTurnPrefixSummary(
+			turnPrefixMessages,
+			models,
+			model,
+			settings.reserveTokens,
+			signal,
+			thinkingLevel,
+		);
 		if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
 		summary = `${historyResult.value}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value}`;
 	} else {

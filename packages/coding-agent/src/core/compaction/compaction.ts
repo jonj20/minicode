@@ -231,22 +231,27 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 // Cut point detection
 // ============================================================================
 
-const ESTIMATED_IMAGE_CHARS = 4800;
+/** Estimate tokens for a string, accounting for CJK characters (~2 tok/char) vs ASCII (~0.25 tok/char). */
+function estimateStringTokens(text: string): number {
+	const cjkChars = (text.match(/[\u4E00-\u9FFF\u3000-\u303F\uFF00-\uFFEF]/g) || []).length;
+	const nonCjkChars = text.length - cjkChars;
+	return Math.ceil(cjkChars * 2 + nonCjkChars / 4);
+}
 
-function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
+function estimateTextAndImageTokens(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {
-		return content.length;
+		return estimateStringTokens(content);
 	}
 
-	let chars = 0;
+	let tokens = 0;
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			chars += block.text.length;
+			tokens += estimateStringTokens(block.text);
 		} else if (block.type === "image") {
-			chars += ESTIMATED_IMAGE_CHARS;
+			tokens += 1200;
 		}
 	}
-	return chars;
+	return tokens;
 }
 
 /**
@@ -254,41 +259,36 @@ function estimateTextAndImageContentChars(content: string | Array<{ type: string
  * This is conservative (overestimates tokens).
  */
 export function estimateTokens(message: AgentMessage): number {
-	let chars = 0;
-
 	switch (message.role) {
 		case "user": {
-			chars = estimateTextAndImageContentChars(
+			return estimateTextAndImageTokens(
 				(message as { content: string | Array<{ type: string; text?: string }> }).content,
 			);
-			return Math.ceil(chars / 4);
 		}
 		case "assistant": {
+			let tokens = 0;
 			const assistant = message as AssistantMessage;
 			for (const block of assistant.content) {
 				if (block.type === "text") {
-					chars += block.text.length;
+					tokens += estimateStringTokens(block.text);
 				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
+					tokens += estimateStringTokens(block.thinking);
 				} else if (block.type === "toolCall") {
-					chars += block.name.length + JSON.stringify(block.arguments).length;
+					tokens += estimateStringTokens(block.name) + estimateStringTokens(JSON.stringify(block.arguments));
 				}
 			}
-			return Math.ceil(chars / 4);
+			return tokens;
 		}
 		case "custom":
 		case "toolResult": {
-			chars = estimateTextAndImageContentChars(message.content);
-			return Math.ceil(chars / 4);
+			return estimateTextAndImageTokens(message.content);
 		}
 		case "bashExecution": {
-			chars = message.command.length + message.output.length;
-			return Math.ceil(chars / 4);
+			return estimateStringTokens(message.command) + estimateStringTokens(message.output);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
-			chars = message.summary.length;
-			return Math.ceil(chars / 4);
+			return estimateStringTokens(message.summary);
 		}
 	}
 
@@ -778,14 +778,13 @@ export async function compact(
 		settings,
 	} = preparation;
 
-	// Generate summaries (can be parallel if both needed) and merge into one
+	// Generate summaries and merge into one
 	let summary: string;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		// Generate both summaries in parallel
-		const [historyResult, turnPrefixResult] = await Promise.all([
+		const historyResult =
 			messagesToSummarize.length > 0
-				? generateSummary(
+				? await generateSummary(
 						messagesToSummarize,
 						model,
 						settings.reserveTokens,
@@ -798,19 +797,18 @@ export async function compact(
 						streamFn,
 						env,
 					)
-				: Promise.resolve("No prior history."),
-			generateTurnPrefixSummary(
-				turnPrefixMessages,
-				model,
-				settings.reserveTokens,
-				apiKey,
-				headers,
-				env,
-				signal,
-				thinkingLevel,
-				streamFn,
-			),
-		]);
+				: "No prior history.";
+		const turnPrefixResult = await generateTurnPrefixSummary(
+			turnPrefixMessages,
+			model,
+			settings.reserveTokens,
+			apiKey,
+			headers,
+			env,
+			signal,
+			thinkingLevel,
+			streamFn,
+		);
 		// Merge into single summary
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
 	} else {

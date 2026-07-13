@@ -8,6 +8,21 @@ import { StdinBuffer } from "./stdin-buffer.ts";
 
 const cjsRequire = createRequire(import.meta.url);
 
+/**
+ * Detect legacy Windows console (conhost) that lacks VT output support.
+ *
+ * Modern terminals set identifying env vars: Windows Terminal (WT_SESSION),
+ * VSCode (TERM_PROGRAM), ConEmu (ConEmuPID), mintty (TERM_PROGRAM).
+ * All other Windows terminals (conhost, plain PowerShell) are treated as legacy
+ * since they lack proper sidebar/VT rendering support.
+ */
+export function isLegacyWindowsConsole(): boolean {
+	if (process.platform !== "win32") return false;
+	// Known modern terminals — definitely not legacy
+	if (process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuPID) return false;
+	return true;
+}
+
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
@@ -145,6 +160,15 @@ export class ProcessTerminal implements Terminal {
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		process.stdout.write("\x1b[?2004h");
+
+		// Enable mouse tracking (SGR mode for coordinates > 223)
+		// \x1b[?1000h = basic mouse tracking
+		// \x1b[?1006h = SGR extended mouse mode
+		// Skip on legacy Windows conhost which doesn't process VT mouse sequences
+		if (!isLegacyWindowsConsole()) {
+			process.stdout.write("\x1b[?1000h");
+			process.stdout.write("\x1b[?1006h");
+		}
 
 		// Set up resize handler immediately
 		process.stdout.on("resize", this.resizeHandler);
@@ -414,9 +438,11 @@ export class ProcessTerminal implements Terminal {
 		const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
 		this.clearKeyboardProtocolNegotiationBuffer();
 
-		// Disable Kitty keyboard protocol if not already done by drainInput()
+		// Disable Kitty keyboard protocol if not already done by drainInput().
+		// Send both direct set (\x1b[=0u) and pop (\x1b[<u) for robustness:
+		// direct set ensures flags are 0 even if push/pop is buggy in xterm.js.
 		if (shouldDisableKittyProtocol) {
-			process.stdout.write("\x1b[<u");
+			process.stdout.write("\x1b[=0u\x1b[<u");
 			this.keyboardProtocolPushed = false;
 			this._kittyProtocolActive = false;
 			setKittyProtocolActive(false);
@@ -439,6 +465,17 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.removeListener("resize", this.resizeHandler);
 			this.resizeHandler = undefined;
 		}
+
+		// Disable mouse tracking (only if it was enabled)
+		if (!isLegacyWindowsConsole()) {
+			process.stdout.write("\x1b[?1000l");
+			process.stdout.write("\x1b[?1006l");
+		}
+
+		// Soft reset (DECSTR) as a safety net to reset any leftover terminal modes
+		// that our explicit disable sequences may have missed. This does not clear
+		// the screen or scrollback.
+		process.stdout.write("\x1b[!p");
 
 		// Pause stdin to prevent any buffered input (e.g., Ctrl+D) from being
 		// re-interpreted after raw mode is disabled. This fixes a race condition

@@ -17,6 +17,8 @@ import type { PathOrFileDescriptor } from "fs";
 import { createRequire } from "module";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { isBunBinary } from "../config.ts";
+import { EMBEDDED_WASM_BASE64 } from "../embedded.ts";
 
 const require = createRequire(import.meta.url);
 const fs = require("fs") as typeof import("fs");
@@ -67,6 +69,10 @@ function patchPhotonWasmRead(): () => void {
 				const err = error as NodeJS.ErrnoException;
 				if (err?.code && err.code !== "ENOENT") {
 					throw error;
+				}
+
+				if (isBunBinary && EMBEDDED_WASM_BASE64) {
+					return Buffer.from(EMBEDDED_WASM_BASE64, "base64");
 				}
 
 				for (const fallbackPath of fallbackPaths) {
@@ -123,7 +129,10 @@ export async function loadPhoton(): Promise<typeof import("@silvia-odwyer/photon
 	}
 
 	loadPromise = (async () => {
-		const restoreReadFileSync = patchPhotonWasmRead();
+		// In Bun compiled binaries, skip monkey-patching fs.readFileSync — it can
+		// interfere with Bun's internal module resolution. The WASM is embedded
+		// via EMBEDDED_WASM_BASE64, so photon-node's fallback path is unnecessary.
+		const restoreReadFileSync = isBunBinary ? () => {} : patchPhotonWasmRead();
 		try {
 			photonModule = await import("@silvia-odwyer/photon-node");
 			return photonModule;

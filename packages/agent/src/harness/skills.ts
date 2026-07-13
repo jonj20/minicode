@@ -354,22 +354,28 @@ function joinEnvPath(base: string, child: string): string {
 }
 
 function dirnameEnvPath(path: string): string {
-	const normalized = path.replace(/\/+$/, "");
-	const slashIndex = normalized.lastIndexOf("/");
+	const normalized = path.replace(/[/\\]+$/, "");
+	const slashIndex = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
 	return slashIndex <= 0 ? "/" : normalized.slice(0, slashIndex);
 }
 
 function basenameEnvPath(path: string): string {
-	const normalized = path.replace(/\/+$/, "");
-	const slashIndex = normalized.lastIndexOf("/");
+	const normalized = path.replace(/[/\\]+$/, "");
+	const slashIndex = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
 	return slashIndex === -1 ? normalized : normalized.slice(slashIndex + 1);
 }
 
 function relativeEnvPath(root: string, path: string): string {
-	const normalizedRoot = root.replace(/\/+$/, "");
-	const normalizedPath = path.replace(/\/+$/, "");
+	const normalizedRoot = root.replace(/[/\\]+$/, "").replace(/\\/g, "/");
+	const normalizedPath = path.replace(/[/\\]+$/, "").replace(/\\/g, "/");
 	if (normalizedPath === normalizedRoot) return "";
-	return normalizedPath.startsWith(`${normalizedRoot}/`)
-		? normalizedPath.slice(normalizedRoot.length + 1)
-		: normalizedPath.replace(/^\/+/, "");
+	if (normalizedPath.startsWith(`${normalizedRoot}/`)) {
+		return normalizedPath.slice(normalizedRoot.length + 1);
+	}
+	// Fallback: try to find the last occurrence of root in path
+	const rootIndex = normalizedPath.indexOf(normalizedRoot);
+	if (rootIndex !== -1) {
+		return normalizedPath.slice(rootIndex + normalizedRoot.length + 1);
+	}
+	return normalizedPath.replace(/^[/\\]+/, "");
 }

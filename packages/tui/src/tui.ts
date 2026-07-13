@@ -2,12 +2,13 @@
  * Minimal TUI implementation with differential rendering
  */
 
+import { execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
-import { isKeyRelease, matchesKey } from "./keys.ts";
-import type { Terminal } from "./terminal.ts";
+import { isKeyRelease, isMouseScroll, matchesKey, parseMouseEvent } from "./keys.ts";
+import { isLegacyWindowsConsole, type Terminal } from "./terminal.ts";
 import {
 	isOsc11BackgroundColorResponse,
 	parseOsc11BackgroundColor,
@@ -17,6 +18,71 @@ import {
 } from "./terminal-colors.ts";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+
+/** Read text from system clipboard (sync). Returns empty string on failure. */
+function readClipboardSync(): string {
+	try {
+		if (process.platform === "win32") {
+			// Force UTF-8 output encoding in case pipe mode defaults to GBK
+			try {
+				const b64 = execSync(
+					'powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard)))"',
+					{ encoding: "utf8", timeout: 2000 },
+				).trim();
+				return Buffer.from(b64, "base64").toString("utf8");
+			} catch {
+				// Fallback: try direct Get-Clipboard with UTF-8 encoding
+				return execSync(
+					'powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-Clipboard)"',
+					{ encoding: "utf8", timeout: 2000 },
+				).trim();
+			}
+		}
+		if (process.platform === "darwin") {
+			return execSync("pbpaste", { encoding: "utf8", timeout: 2000 });
+		}
+		// Linux: try wl-copy, xclip, xsel
+		try {
+			return execSync("wl-paste --no-newline", { encoding: "utf8", timeout: 2000 });
+		} catch {
+			try {
+				return execSync("xclip -selection clipboard -o", { encoding: "utf8", timeout: 2000 });
+			} catch {
+				return execSync("xsel --clipboard --output", { encoding: "utf8", timeout: 2000 });
+			}
+		}
+	} catch {
+		return "";
+	}
+}
+
+/** Write text to system clipboard (non-blocking fire-and-forget). */
+function writeClipboard(text: string): void {
+	try {
+		if (process.platform === "win32") {
+			// Use clip.exe via spawn (non-blocking)
+			const child = spawn("clip", [], { stdio: ["pipe", "ignore", "ignore"] });
+			child.stdin.on("error", () => {});
+			child.stdin.write(text);
+			child.stdin.end();
+			return;
+		}
+		if (process.platform === "darwin") {
+			const child = spawn("pbcopy", [], { stdio: ["pipe", "ignore", "ignore"] });
+			child.stdin.on("error", () => {});
+			child.stdin.write(text);
+			child.stdin.end();
+			return;
+		}
+		// Linux
+		const child = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
+		child.stdin.on("error", () => {});
+		child.stdin.write(text);
+		child.stdin.end();
+	} catch {
+		// clipboard unavailable; fail silently
+	}
+}
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -119,7 +185,7 @@ export function isFocusable(component: Component | null): component is Component
  */
 export const CURSOR_MARKER = "\x1b_pi:c\x07";
 
-export { visibleWidth };
+export type { visibleWidth };
 
 /**
  * Anchor position for overlays
@@ -255,6 +321,18 @@ type OverlayFocusRestorePolicy = "clear" | "preserve";
  */
 export class Container implements Component {
 	children: Component[] = [];
+	/**
+	 * Layout direction: "column" (default) stacks children vertically,
+	 * "row" places children side-by-side horizontally.
+	 */
+	flexDirection: "column" | "row" = "column";
+
+	/**
+	 * Width allocation for each child in "row" mode.
+	 * Can be absolute columns or percentage strings like "50%".
+	 * If not set, children share width equally.
+	 */
+	widths?: (number | string)[];
 
 	addChild(component: Component): void {
 		this.children.push(component);
@@ -278,6 +356,13 @@ export class Container implements Component {
 	}
 
 	render(width: number): string[] {
+		if (this.flexDirection === "row" && this.children.length > 0) {
+			return this.renderRow(width);
+		}
+		return this.renderColumn(width);
+	}
+
+	private renderColumn(width: number): string[] {
 		const lines: string[] = [];
 		for (const child of this.children) {
 			const childLines = child.render(width);
@@ -286,6 +371,60 @@ export class Container implements Component {
 			}
 		}
 		return lines;
+	}
+
+	private renderRow(width: number): string[] {
+		// Calculate widths for each child
+		const childWidths = this.resolveChildWidths(width);
+		const maxHeight = this.children.reduce((max, child, i) => {
+			const childLines = child.render(childWidths[i]!);
+			return Math.max(max, childLines.length);
+		}, 0);
+
+		// Render each child and composite side-by-side
+		const result: string[] = [];
+		for (let row = 0; row < maxHeight; row++) {
+			let line = "";
+			for (let i = 0; i < this.children.length; i++) {
+				const childWidth = childWidths[i]!;
+				const childLines = this.children[i]!.render(childWidth);
+				const childLine = childLines[row] ?? "";
+				// Pad or truncate to exact width
+				const visibleLen = visibleWidth(childLine);
+				if (visibleLen > childWidth) {
+					line += sliceByColumn(childLine, 0, childWidth, false);
+				} else {
+					line += childLine + " ".repeat(Math.max(0, childWidth - visibleLen));
+				}
+			}
+			result.push(line);
+		}
+		return result;
+	}
+
+	private resolveChildWidths(totalWidth: number): number[] {
+		const count = this.children.length;
+		if (count === 0) return [];
+
+		if (this.widths && this.widths.length === count) {
+			return this.widths.map((w) => {
+				if (typeof w === "number") return w;
+				// Parse percentage
+				const match = w.match(/^(\d+(?:\.\d+)?)%$/);
+				if (match) {
+					return Math.floor((totalWidth * parseFloat(match[1])) / 100);
+				}
+				return Math.floor(totalWidth / count);
+			});
+		}
+
+		// Equal distribution
+		const each = Math.floor(totalWidth / count);
+		const widths = Array(count).fill(each);
+		// Distribute remainder to last child
+		const remainder = totalWidth - each * count;
+		widths[count - 1]! += remainder;
+		return widths;
 	}
 }
 
@@ -303,6 +442,8 @@ export class TUI extends Container {
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
+	/** Callback when user single-clicks on a content line. Args: absolute scrollable line index, stripped line text. */
+	public onContentClick?: (line: number, text: string) => void;
 	private renderRequested = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -325,6 +466,34 @@ export class TUI extends Container {
 	private overlayStack: OverlayStackEntry[] = [];
 	private overlayFocusRestore: OverlayFocusRestoreState = { status: "inactive" };
 
+	// Sidebar state
+	private sidebarVisible = false;
+	private sidebarComponent: Component | null = null;
+	private sidebarFocused = false;
+	private preSidebarFocus: Component | null = null;
+	/** Whether the user wants the sidebar visible (survives terminal resize) */
+	private sidebarUserWanted = false;
+
+	// Scroll state
+	private scrollOffset = 0;
+	private scrollableTotalLines = 0;
+	private scrollableVisibleHeight = 0;
+	private scrollVisibleStart = 0;
+	private scrollPaddingCount = 0;
+	/** Index in children[] where fixed-bottom section starts. All children before this index scroll. */
+	private scrollSplitIndex = 0;
+
+	// Mouse text selection state
+	private mouseSelecting = false;
+	private selectAnchorLine = 0;
+	private selectAnchorCol = 0;
+	private selectFocusLine = 0;
+	private selectFocusCol = 0;
+	// Cached visible lines from last render (for copy without re-render)
+	private cachedVisibleLines: string[] = [];
+	// Full scrollable lines from last render (for click position mapping)
+	private cachedScrollableLines: string[] = [];
+
 	constructor(terminal: Terminal, showHardwareCursor?: boolean) {
 		super();
 		this.terminal = terminal;
@@ -335,6 +504,236 @@ export class TUI extends Container {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	/**
+	 * Override render to support horizontal sidebar layout and mouse scrolling.
+	 */
+	override render(width: number): string[] {
+		// Render scrollable part (children before splitIndex) at narrower width when sidebar visible
+		const scrollableWidth = this.sidebarVisible ? width - this.sidebarWidth : width;
+		const scrollableLines = this.renderChildren(0, this.scrollSplitIndex, scrollableWidth);
+
+		// Render fixed bottom part at same width as scrollable (footer, input fit left side)
+		const fixedLines = this.renderChildren(this.scrollSplitIndex, this.children.length, scrollableWidth);
+
+		// Calculate available height for scrollable content
+		const termHeight = this.terminal.rows;
+		const availableHeight = Math.max(1, termHeight - fixedLines.length);
+
+		// Track for scroll clamping
+		this.scrollableTotalLines = scrollableLines.length;
+		this.scrollableVisibleHeight = availableHeight;
+		const maxScroll = Math.max(0, scrollableLines.length - availableHeight);
+		this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
+
+		// Show the bottom of scrollable content (newest first)
+		const end = Math.max(0, scrollableLines.length - this.scrollOffset);
+		const start = Math.max(0, end - availableHeight);
+		this.scrollVisibleStart = start;
+		const visibleScrollable = scrollableLines.slice(start, end);
+
+		// Pad if needed to fill the available height
+		this.scrollPaddingCount = 0;
+		while (visibleScrollable.length < availableHeight) {
+			visibleScrollable.unshift("");
+			this.scrollPaddingCount++;
+		}
+
+		// Cache visible lines for copy — BEFORE scrollbar modifies lines
+		this.cachedVisibleLines = visibleScrollable.map((l) => this.stripAnsi(l));
+		this.cachedScrollableLines = scrollableLines;
+
+		// Add Windows-style thin scrollbar on right edge if content overflows
+		if (scrollableLines.length > availableHeight && availableHeight > 2) {
+			const trackChar = "│"; // thin track line
+			const thumbChar = "│"; // thin thumb - same width as track
+			const thumbHeight = Math.max(1, Math.round((availableHeight / scrollableLines.length) * availableHeight));
+			const thumbStart =
+				maxScroll > 0
+					? Math.round(((maxScroll - this.scrollOffset) / maxScroll) * (availableHeight - thumbHeight))
+					: 0;
+
+			const trackColor = "\x1b[38;5;234m"; // barely visible track
+			const thumbColor = "\x1b[38;5;238m"; // slightly brighter than bg (233)
+			const resetColor = "\x1b[0m";
+
+			for (let i = 0; i < visibleScrollable.length; i++) {
+				const isThumb = i >= thumbStart && i < thumbStart + thumbHeight;
+				const barChar = isThumb ? thumbChar : trackChar;
+				const color = isThumb ? thumbColor : trackColor;
+
+				const maxContentWidth = scrollableWidth - 1;
+				let content = visibleScrollable[i]!;
+				const vis = visibleWidth(content);
+				if (vis > maxContentWidth) {
+					content = sliceByColumn(content, 0, maxContentWidth, false);
+				}
+				const pad = Math.max(0, maxContentWidth - visibleWidth(content));
+				visibleScrollable[i] = content + " ".repeat(pad) + color + barChar + resetColor;
+			}
+		}
+
+		// Mouse selection highlight — apply reverse video to selected lines
+		if (
+			this.mouseSelecting ||
+			this.selectAnchorLine !== this.selectFocusLine ||
+			this.selectAnchorCol !== this.selectFocusCol
+		) {
+			const sStart = Math.min(this.selectAnchorLine, this.selectFocusLine);
+			const sEnd = Math.max(this.selectAnchorLine, this.selectFocusLine);
+			for (let i = sStart; i <= sEnd && i < visibleScrollable.length; i++) {
+				const line = visibleScrollable[i]!;
+				if (line.length > 0) {
+					visibleScrollable[i] = `\x1b[7m${line}\x1b[0m`;
+				}
+			}
+		}
+
+		// Handle sidebar: only apply to scrollable portion, fixed bottom stays full width
+		if (this.sidebarVisible && this.sidebarComponent) {
+			return this.compositSidebar(visibleScrollable, fixedLines, width);
+		}
+
+		// No sidebar: combine scrollable + fixed
+		return [...visibleScrollable, ...fixedLines];
+	}
+
+	/** Strip ANSI escape sequences and control characters from a line. */
+	private stripAnsi(line: string): string {
+		return (
+			line
+				// OSC sequences: ESC ] ... (BEL or ST) — must come first (greedy)
+				.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+				// DCS/APC/SOS: ESC P/_/^/X ... ST
+				.replace(/\x1b[P_^X][\s\S]*?(?:\x1b\\|\x07)/g, "")
+				// CSI with intermediates: ESC [ ?/#/>/! ... final byte
+				.replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, "")
+				// Simple CSI: ESC [ digits/semicolons + letter
+				.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+				// ESC followed by single printable char (e.g. ESC c for reset)
+				.replace(/\x1b[^\x1b[0-9;\]P_^X]/g, "")
+				// Any remaining ESC sequences
+				.replace(/\x1b/g, "")
+				// Trim trailing whitespace (line padding)
+				.replace(/\s+$/, "")
+		);
+	}
+
+	/** Check if a position is within the current selection range. */
+	private isInSelection(line: number, col: number): boolean {
+		// Normalize: anchor comes first, focus comes last
+		const anchorBefore =
+			this.selectAnchorLine < this.selectFocusLine ||
+			(this.selectAnchorLine === this.selectFocusLine && this.selectAnchorCol <= this.selectFocusCol);
+		const startLine = anchorBefore ? this.selectAnchorLine : this.selectFocusLine;
+		const startCol = anchorBefore ? this.selectAnchorCol : this.selectFocusCol;
+		const endLine = anchorBefore ? this.selectFocusLine : this.selectAnchorLine;
+		const endCol = anchorBefore ? this.selectFocusCol : this.selectAnchorCol;
+
+		if (line < startLine || line > endLine) return false;
+		if (line === startLine && line === endLine) return col >= startCol && col <= endCol;
+		if (line === startLine) return col >= startCol;
+		if (line === endLine) return col <= endCol;
+		return true;
+	}
+
+	/** Copy the current mouse selection to clipboard. */
+	private copyMouseSelection(): void {
+		const start = Math.min(this.selectAnchorLine, this.selectFocusLine);
+		const end = Math.max(this.selectAnchorLine, this.selectFocusLine);
+		if (start === end && this.selectAnchorCol === this.selectFocusCol) return;
+		if (this.cachedVisibleLines.length === 0) return;
+		const selected = this.cachedVisibleLines.slice(start, end + 1).join("\n");
+		if (selected.length === 0) return;
+		writeClipboard(selected);
+	}
+
+	private renderChildren(from: number, to: number, width: number): string[] {
+		const lines: string[] = [];
+		for (let i = from; i < to && i < this.children.length; i++) {
+			const childLines = this.children[i]!.render(width);
+			for (const line of childLines) {
+				lines.push(line);
+			}
+		}
+		return lines;
+	}
+
+	private compositSidebar(scrollableLines: string[], fixedLines: string[], width: number): string[] {
+		const mainWidth = width - this.sidebarWidth;
+		const height = this.terminal.rows;
+
+		const sidebarLines = this.sidebarComponent!.render(this.sidebarWidth);
+		const totalRows = scrollableLines.length + fixedLines.length;
+		while (sidebarLines.length < totalRows) {
+			sidebarLines.push("");
+		}
+
+		const result: string[] = [];
+		const sidebarBg = "\x1b[48;5;233m";
+		const reset = "\x1b[0m";
+
+		// Scrollable area: content truncated to mainWidth, sidebar on right
+		for (let i = 0; i < scrollableLines.length; i++) {
+			const mainLine = scrollableLines[i] ?? "";
+			const mainVisible = visibleWidth(mainLine);
+			const mainPadded =
+				mainVisible > mainWidth
+					? sliceByColumn(mainLine, 0, mainWidth, false)
+					: mainLine + " ".repeat(Math.max(0, mainWidth - mainVisible));
+
+			const sidebarLine = sidebarLines[i] ?? "";
+			const sidebarVisible = visibleWidth(sidebarLine);
+			const sidebarPadded =
+				sidebarVisible > this.sidebarWidth
+					? sliceByColumn(sidebarLine, 0, this.sidebarWidth, false)
+					: sidebarLine + " ".repeat(Math.max(0, this.sidebarWidth - sidebarVisible));
+
+			let combined = reset + mainPadded + sidebarBg + sidebarPadded + reset;
+			if (visibleWidth(combined) > width) combined = sliceByColumn(combined, 0, width, false);
+			result.push(combined);
+		}
+
+		// Pad to fill terminal height (minus fixed lines)
+		const scrollableTarget = height - fixedLines.length;
+		const emptyScrollLine = reset + " ".repeat(mainWidth) + sidebarBg + " ".repeat(this.sidebarWidth) + reset;
+		while (result.length < scrollableTarget) {
+			result.push(emptyScrollLine);
+		}
+
+		// Fixed bottom lines (input, footer): pad to mainWidth, append sidebar bg
+		for (let i = 0; i < fixedLines.length; i++) {
+			const line = fixedLines[i] ?? "";
+			const lineVisible = visibleWidth(line);
+			const padded =
+				lineVisible < mainWidth
+					? line + " ".repeat(mainWidth - lineVisible)
+					: lineVisible > mainWidth
+						? sliceByColumn(line, 0, mainWidth, false)
+						: line;
+
+			// For the last footer line, render sidebar footer text if set
+			const isLastFixedLine = i === fixedLines.length - 1;
+			let sidebarText: string;
+			if (isLastFixedLine && this.sidebarFooterText) {
+				sidebarText = this.sidebarFooterText;
+			} else {
+				const sidebarIdx = scrollableLines.length + i;
+				sidebarText = sidebarLines[sidebarIdx] ?? "";
+			}
+			const sidebarVisible = visibleWidth(sidebarText);
+			const sidebarPadded =
+				sidebarVisible > this.sidebarWidth
+					? sliceByColumn(sidebarText, 0, this.sidebarWidth, false)
+					: sidebarText + " ".repeat(Math.max(0, this.sidebarWidth - sidebarVisible));
+
+			let combined = reset + padded + sidebarBg + sidebarPadded + reset;
+			if (visibleWidth(combined) > width) combined = sliceByColumn(combined, 0, width, false);
+			result.push(combined);
+		}
+
+		return result;
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -606,6 +1005,113 @@ export class TUI extends Container {
 		return this.overlayStack.some((o) => this.isOverlayVisible(o));
 	}
 
+	// ── Sidebar methods ──────────────────────────────────────────────
+
+	/** Width of the sidebar in columns */
+	private sidebarWidth = 36;
+
+	/** Fixed footer text rendered at the bottom of the sidebar */
+	private sidebarFooterText: string | undefined = undefined;
+
+	/**
+	 * Show the sidebar with the given component.
+	 * The sidebar is rendered side-by-side with the main content.
+	 */
+	showSidebar(component: Component, options?: { width?: number }): void {
+		// Sidebar not supported on legacy Windows conhost (no VT output)
+		if (isLegacyWindowsConsole()) return;
+		this.sidebarComponent = component;
+		this.sidebarVisible = true;
+		this.sidebarUserWanted = true;
+		this.sidebarWidth = options?.width ?? 36;
+		this.requestRender();
+	}
+
+	/** Hide the sidebar */
+	hideSidebar(): void {
+		this.sidebarVisible = false;
+		this.sidebarComponent = null;
+		this.sidebarFocused = false;
+		this.sidebarUserWanted = false;
+		this.sidebarFooterText = undefined;
+		this.requestRender();
+	}
+
+	/** Set fixed footer text at the bottom of the sidebar (aligned with main footer) */
+	setSidebarFooter(text: string | undefined): void {
+		this.sidebarFooterText = text;
+		this.requestRender();
+	}
+
+	/** Toggle sidebar visibility */
+	toggleSidebar(): void {
+		if (this.sidebarVisible) {
+			this.hideSidebar();
+		} else if (this.sidebarComponent) {
+			this.sidebarVisible = true;
+			this.sidebarUserWanted = true;
+			this.requestRender();
+		}
+	}
+
+	/** Toggle focus between sidebar and main content */
+	toggleSidebarFocus(): void {
+		if (!this.sidebarVisible || !this.sidebarComponent) return;
+
+		if (this.sidebarFocused) {
+			// Unfocus sidebar, restore previous focus
+			this.sidebarFocused = false;
+			if (this.preSidebarFocus) {
+				this.setFocus(this.preSidebarFocus);
+				this.preSidebarFocus = null;
+			}
+		} else {
+			// Focus sidebar, save current focus
+			this.preSidebarFocus = this.focusedComponent;
+			this.sidebarFocused = true;
+		}
+		this.requestRender();
+	}
+
+	/** Check if sidebar has focus */
+	isSidebarFocused(): boolean {
+		return this.sidebarFocused;
+	}
+
+	/** Check if sidebar is visible */
+	isSidebarVisible(): boolean {
+		return this.sidebarVisible;
+	}
+
+	/** Get sidebar width */
+	getSidebarWidth(): number {
+		return this.sidebarWidth;
+	}
+
+	/** Check terminal width and hide sidebar if too narrow, restore when wide enough */
+	private checkSidebarWidth(): void {
+		// No sidebar on legacy Windows conhost
+		if (isLegacyWindowsConsole()) return;
+		if (this.sidebarUserWanted && this.sidebarComponent) {
+			if (!this.sidebarVisible && this.terminal.columns >= this.sidebarWidth + 70) {
+				// Terminal widened enough: restore sidebar
+				this.sidebarVisible = true;
+				this.requestRender();
+			} else if (this.sidebarVisible && this.terminal.columns < this.sidebarWidth + 70) {
+				// Terminal too narrow: temporarily hide
+				this.sidebarVisible = false;
+				this.requestRender();
+			}
+		}
+	}
+
+	/**
+	 * Set the split index: children [0..index) scroll, children [index..] are fixed at bottom.
+	 */
+	setScrollSplitIndex(index: number): void {
+		this.scrollSplitIndex = index;
+	}
+
 	/** Check if an overlay entry is currently visible */
 	private isOverlayVisible(entry: OverlayStackEntry): boolean {
 		if (entry.hidden) return false;
@@ -638,6 +1144,14 @@ export class TUI extends Container {
 			(data) => this.handleInput(data),
 			() => this.requestRender(),
 		);
+		// Enter alternate screen buffer (like vim/htop) on supported terminals.
+		// Legacy Windows conhost can't process VT sequences,
+		// so skip to avoid printing raw escape codes as text.
+		if (!isLegacyWindowsConsole()) {
+			this.terminal.write("\x1b[?1049h");
+			this.terminal.write("\x1b[2J"); // Clear screen
+			this.terminal.write("\x1b[H"); // Move cursor to top-left
+		}
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031h");
@@ -693,18 +1207,22 @@ export class TUI extends Container {
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031l");
 		}
-		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
-		if (this.previousLines.length > 0) {
-			const targetRow = this.previousLines.length; // Line after the last content
-			const lineDiff = targetRow - this.hardwareCursorRow;
-			if (lineDiff > 0) {
-				this.terminal.write(`\x1b[${lineDiff}B`);
-			} else if (lineDiff < 0) {
-				this.terminal.write(`\x1b[${-lineDiff}A`);
+		if (!isLegacyWindowsConsole()) {
+			// Leave alternate screen buffer - restore previous terminal content
+			this.terminal.write("\x1b[?1049l");
+		} else {
+			// Legacy Windows conhost: move cursor to end of content to prevent artifacts
+			if (this.previousLines.length > 0) {
+				const targetRow = this.previousLines.length;
+				const lineDiff = targetRow - this.hardwareCursorRow;
+				if (lineDiff > 0) {
+					this.terminal.write(`\x1b[${lineDiff}B`);
+				} else if (lineDiff < 0) {
+					this.terminal.write(`\x1b[${-lineDiff}A`);
+				}
+				this.terminal.write("\r\n");
 			}
-			this.terminal.write("\r\n");
 		}
-
 		this.terminal.showCursor();
 		this.terminal.stop();
 	}
@@ -791,6 +1309,122 @@ export class TUI extends Container {
 		// Global debug key handler (Shift+Ctrl+D)
 		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
 			this.onDebug();
+			return;
+		}
+
+		// Sidebar toggle (Ctrl+Shift+S)
+		if (matchesKey(data, "ctrl+shift+s")) {
+			this.toggleSidebar();
+			return;
+		}
+
+		// Sidebar focus (Ctrl+Shift+F) - when sidebar is visible, toggle focus between sidebar and main content
+		if (matchesKey(data, "ctrl+shift+f") && this.sidebarVisible && this.sidebarComponent) {
+			this.toggleSidebarFocus();
+			return;
+		}
+
+		// When sidebar is focused, route input to sidebar component
+		if (this.sidebarFocused && this.sidebarComponent && this.sidebarComponent.handleInput) {
+			this.sidebarComponent.handleInput(data);
+			this.requestRender();
+			return;
+		}
+
+		// Mouse scroll wheel — only when pointer is over the scrollable content area
+		const mouseEvent = parseMouseEvent(data);
+		if (mouseEvent) {
+			const scrollDir = isMouseScroll(mouseEvent);
+			const scrollableWidth = this.sidebarVisible
+				? this.terminal.columns - this.sidebarWidth
+				: this.terminal.columns;
+			const inHorizontalRange = mouseEvent.column <= scrollableWidth;
+			const inVerticalRange = mouseEvent.row <= this.scrollableVisibleHeight;
+
+			// Scroll wheel
+			if (scrollDir && this.scrollableVisibleHeight > 0 && inVerticalRange && inHorizontalRange) {
+				const maxScroll = Math.max(0, this.scrollableTotalLines - this.scrollableVisibleHeight);
+				this.scrollOffset += scrollDir === "up" ? 3 : -3;
+				this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll));
+				this.requestRender();
+				return;
+			}
+
+			// Mouse button press (button 0 = left click, not released)
+			// Fire onContentClick on press (not release) because some terminals
+			// (notably Windows Terminal) do not reliably send release events.
+			if (mouseEvent.button === 0 && !mouseEvent.released && inVerticalRange && inHorizontalRange) {
+				this.mouseSelecting = true;
+				this.selectAnchorLine = mouseEvent.row - 1;
+				this.selectAnchorCol = mouseEvent.column - 1;
+				this.selectFocusLine = this.selectAnchorLine;
+				this.selectFocusCol = this.selectAnchorCol;
+
+				if (this.onContentClick) {
+					const pressRow = mouseEvent.row - 1;
+					const contentRow = pressRow - this.scrollPaddingCount;
+					const absLine = this.scrollVisibleStart + contentRow;
+					if (contentRow >= 0 && absLine >= 0 && absLine < this.scrollableTotalLines) {
+						this.onContentClick(absLine, this.stripAnsi(this.cachedScrollableLines[absLine] ?? ""));
+					}
+				}
+
+				this.requestRender();
+				return;
+			}
+
+			// Mouse drag (button 0 held, motion)
+			if (mouseEvent.button === 0 && !mouseEvent.released && this.mouseSelecting) {
+				this.selectFocusLine = mouseEvent.row - 1;
+				this.selectFocusCol = mouseEvent.column - 1;
+				this.requestRender();
+				return;
+			}
+
+			// Mouse button release — clear selection state, no click handling
+			if (mouseEvent.button === 0 && mouseEvent.released && this.mouseSelecting) {
+				this.mouseSelecting = false;
+				const releaseRow = mouseEvent.row - 1;
+				const releaseCol = mouseEvent.column - 1;
+				const rowDelta = Math.abs(releaseRow - this.selectAnchorLine);
+				const colDelta = Math.abs(releaseCol - this.selectAnchorCol);
+				const wasDrag = rowDelta > 0 || colDelta > 3;
+				this.selectFocusLine = releaseRow;
+				this.selectFocusCol = releaseCol;
+				if (!wasDrag) {
+					// Clear selection so highlight doesn't persist
+					this.selectAnchorLine = 0;
+					this.selectAnchorCol = 0;
+					this.selectFocusLine = 0;
+					this.selectFocusCol = 0;
+				}
+				this.requestRender();
+				return;
+			}
+
+			// Right-click: copy selection if click is within selected area, otherwise paste in editor
+			if (mouseEvent.button === 2 && !mouseEvent.released) {
+				const clickLine = mouseEvent.row - 1;
+				const hasSelection =
+					this.selectAnchorLine !== this.selectFocusLine || this.selectAnchorCol !== this.selectFocusCol;
+				if (hasSelection && this.isInSelection(clickLine, mouseEvent.column - 1)) {
+					this.copyMouseSelection();
+					// Clear selection highlight after copy
+					this.selectAnchorLine = 0;
+					this.selectAnchorCol = 0;
+					this.selectFocusLine = 0;
+					this.selectFocusCol = 0;
+				} else if (mouseEvent.row > this.scrollableVisibleHeight) {
+					const clipText = readClipboardSync();
+					if (clipText.length > 0 && this.focusedComponent?.handleInput) {
+						this.focusedComponent.handleInput(`\x1b[200~${clipText}\x1b[201~`);
+					}
+				}
+				this.requestRender();
+				return;
+			}
+
+			// Ignore other mouse events
 			return;
 		}
 
@@ -1253,6 +1887,10 @@ export class TUI extends Container {
 
 	private doRender(): void {
 		if (this.stopped) return;
+
+		// Check sidebar width before rendering
+		this.checkSidebarWidth();
+
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
@@ -1570,7 +2208,7 @@ export class TUI extends Container {
 		buffer += "\x1b[?2026l"; // End synchronized output
 
 		if (process.env.PI_TUI_DEBUG === "1") {
-			const debugDir = "/tmp/tui";
+			const debugDir = path.join(os.tmpdir(), "tui");
 			fs.mkdirSync(debugDir, { recursive: true });
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 			const debugData = [

@@ -14,6 +14,7 @@ type SubmitContext = {
 		prompt: (text: string, options?: unknown) => Promise<void>;
 	};
 	flushPendingBashComponents: () => void;
+	hideWelcomeScreen: () => void;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
 };
@@ -44,6 +45,7 @@ function createSubmitContext(): SubmitContext {
 			prompt: vi.fn(async () => {}),
 		},
 		flushPendingBashComponents: vi.fn(),
+		hideWelcomeScreen: vi.fn(),
 		pendingUserInputs: [],
 	};
 }

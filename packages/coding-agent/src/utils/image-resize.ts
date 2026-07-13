@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { isBunBinary } from "../config.ts";
 import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./image-resize-core.ts";
 
 export type { ImageResizeOptions, ResizedImage } from "./image-resize-core.ts";
@@ -87,20 +88,17 @@ export async function resizeImage(
 	mimeType: string,
 	options?: ImageResizeOptions,
 ): Promise<ResizedImage | null> {
+	// In Bun compiled binaries, Worker thread loading triggers internal module
+	// resolution bugs (union field panic). Fall back to in-process resizing.
+	if (isBunBinary) {
+		return resizeImageInProcess(inputBytes, mimeType, options);
+	}
+
 	const isTypeScriptRuntime = import.meta.url.endsWith(".ts");
 	const workerUrl = new URL(
 		isTypeScriptRuntime ? "./image-resize-worker.ts" : "./image-resize-worker.js",
 		import.meta.url,
 	);
-
-	// Bun compiled executables resolve worker entrypoints by string path, not via
-	// new URL(..., import.meta.url). Try the string path first under Bun so the
-	// release binary uses the embedded worker instead of falling back in-process.
-	if (typeof process.versions.bun === "string") {
-		try {
-			return await resizeImageInWorker("./src/utils/image-resize-worker.ts", inputBytes, mimeType, options);
-		} catch {}
-	}
 
 	try {
 		return await resizeImageInWorker(workerUrl, inputBytes, mimeType, options);

@@ -5,15 +5,21 @@ import { Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
-import { getReadmePath } from "../../config.ts";
+import {
+	getReadmePath,
+	hasEmbeddedData,
+	readEmbeddedDoc,
+	readEmbeddedExample,
+	readEmbeddedReadme,
+} from "../../config.ts";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
-import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
+import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
-import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
+import { getTextOutput, isCodeFile, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -21,6 +27,9 @@ const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+	smart: Type.Optional(
+		Type.Boolean({ description: "When true and offset/limit are unset, return summary for large non-code files" }),
+	),
 });
 
 export type ReadToolInput = Static<typeof readSchema>;
@@ -54,6 +63,61 @@ const defaultReadOperations: ReadOperations = {
 	access: (path) => fsAccess(path, constants.R_OK),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 };
+
+/**
+ * Read operations that check embedded files first when running as Bun binary.
+ * This allows pi documentation (README.md, docs/, examples/) to be read from
+ * the embedded data in the binary without external files.
+ */
+function createEmbeddedReadOperations(): ReadOperations {
+	const packageRoot = dirname(getReadmePath());
+
+	return {
+		async readFile(absolutePath: string): Promise<Buffer> {
+			if (hasEmbeddedData) {
+				const relativePath = relative(resolvePath(packageRoot), resolvePath(absolutePath)).replace(/\\/g, "/");
+
+				if (relativePath === "README.md") {
+					const content = readEmbeddedReadme();
+					if (content !== undefined) return Buffer.from(content, "utf-8");
+				}
+
+				if (relativePath.startsWith("docs/")) {
+					const docName = relativePath.slice("docs/".length);
+					const content = readEmbeddedDoc(docName);
+					if (content !== undefined) return Buffer.from(content, "utf-8");
+				}
+
+				if (relativePath.startsWith("examples/")) {
+					const exampleName = relativePath.slice("examples/".length);
+					const content = readEmbeddedExample(exampleName);
+					if (content !== undefined) return Buffer.from(content, "utf-8");
+				}
+			}
+			return fsReadFile(absolutePath);
+		},
+		async access(absolutePath: string): Promise<void> {
+			if (hasEmbeddedData) {
+				const relativePath = relative(resolvePath(packageRoot), resolvePath(absolutePath)).replace(/\\/g, "/");
+
+				if (relativePath === "README.md" && readEmbeddedReadme() !== undefined) {
+					return;
+				}
+				if (relativePath.startsWith("docs/") && readEmbeddedDoc(relativePath.slice("docs/".length)) !== undefined) {
+					return;
+				}
+				if (
+					relativePath.startsWith("examples/") &&
+					readEmbeddedExample(relativePath.slice("examples/".length)) !== undefined
+				) {
+					return;
+				}
+			}
+			return fsAccess(absolutePath, constants.R_OK);
+		},
+		detectImageMimeType: detectSupportedImageMimeTypeFromFile,
+	};
+}
 
 export interface ReadToolOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
@@ -205,17 +269,17 @@ export function createReadToolDefinition(
 	options?: ReadToolOptions,
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
-	const ops = options?.operations ?? defaultReadOperations;
+	const ops = options?.operations ?? (hasEmbeddedData ? createEmbeddedReadOperations() : defaultReadOperations);
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
 		promptSnippet: "Read file contents",
 		promptGuidelines: ["Use read to examine files instead of cat or sed."],
 		parameters: readSchema,
 		async execute(
 			_toolCallId,
-			{ path, offset, limit }: { path: string; offset?: number; limit?: number },
+			{ path, offset, limit, smart }: { path: string; offset?: number; limit?: number; smart?: boolean },
 			signal?: AbortSignal,
 			_onUpdate?,
 			ctx?,
@@ -247,29 +311,18 @@ export function createReadToolDefinition(
 							if (mimeType) {
 								// Read image as binary.
 								const buffer = await ops.readFile(absolutePath);
-								if (autoResizeImages) {
-									// Resize image if needed before sending it back to the model.
-									const resized = await resizeImage(buffer, mimeType);
-									if (!resized) {
-										let textNote = `Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`;
-										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-										content = [{ type: "text", text: textNote }];
-									} else {
-										const dimensionNote = formatDimensionNote(resized);
-										let textNote = `Read image file [${resized.mimeType}]`;
-										if (dimensionNote) textNote += `\n${dimensionNote}`;
-										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-										content = [
-											{ type: "text", text: textNote },
-											{ type: "image", data: resized.data, mimeType: resized.mimeType },
-										];
-									}
+								const processed = await processImage(buffer, mimeType, { autoResizeImages });
+								if (!processed.ok) {
+									let textNote = `Read image file [${mimeType}]\n${processed.message}`;
+									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
+									content = [{ type: "text", text: textNote }];
 								} else {
-									let textNote = `Read image file [${mimeType}]`;
+									let textNote = `Read image file [${processed.mimeType}]`;
+									if (processed.hints.length > 0) textNote += `\n${processed.hints.join("\n")}`;
 									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
 									content = [
 										{ type: "text", text: textNote },
-										{ type: "image", data: buffer.toString("base64"), mimeType },
+										{ type: "image", data: processed.data, mimeType: processed.mimeType },
 									];
 								}
 							} else {
@@ -278,6 +331,23 @@ export function createReadToolDefinition(
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");
 								const totalFileLines = allLines.length;
+
+								// Smart read: for large non-code files, return summary first.
+								if (
+									smart &&
+									offset === undefined &&
+									limit === undefined &&
+									!isCodeFile(absolutePath) &&
+									totalFileLines > 200
+								) {
+									const summaryText = `[File: ${formatPathRelativeToCwdOrAbsolute(absolutePath, cwd)} - ${totalFileLines} lines]\n[Large file detected. Use offset=1,limit=100 to read first 100 lines, or offset=${totalFileLines - 50} to read last 50 lines.]`;
+									content = [{ type: "text", text: summaryText }];
+									if (aborted) return;
+									signal?.removeEventListener("abort", onAbort);
+									resolve({ content, details: undefined });
+									return;
+								}
+
 								// Apply offset if specified. Convert from 1-indexed input to 0-indexed array access.
 								const startLine = offset ? Math.max(0, offset - 1) : 0;
 								const startLineDisplay = startLine + 1;

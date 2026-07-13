@@ -1,9 +1,11 @@
 name: Build Binaries
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # Disabled: build binaries manually via workflow_dispatch
+  # on:
+  #   push:
+  #     tags:
+  #       - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -65,12 +67,12 @@ jobs:
           cd packages/coding-agent/binaries
 
           release_assets=(
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            minicode-darwin-arm64.tar.gz
+            minicode-darwin-x64.tar.gz
+            minicode-linux-x64.tar.gz
+            minicode-linux-arm64.tar.gz
+            minicode-windows-x64.zip
+            minicode-windows-arm64.zip
           )
 
           for asset in "${release_assets[@]}"; do
@@ -111,12 +113,12 @@ jobs:
           cd release-assets
 
           expected_assets=(
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            minicode-darwin-arm64.tar.gz
+            minicode-darwin-x64.tar.gz
+            minicode-linux-x64.tar.gz
+            minicode-linux-arm64.tar.gz
+            minicode-windows-x64.zip
+            minicode-windows-arm64.zip
             SHA256SUMS
             RELEASE_NOTES.md
           )
@@ -136,12 +138,12 @@ jobs:
           cd release-assets
 
           release_assets=(
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            minicode-darwin-arm64.tar.gz
+            minicode-darwin-x64.tar.gz
+            minicode-linux-x64.tar.gz
+            minicode-linux-arm64.tar.gz
+            minicode-windows-x64.zip
+            minicode-windows-arm64.zip
             SHA256SUMS
           )
 

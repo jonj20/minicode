@@ -12,6 +12,18 @@ export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
 export const GREP_MAX_LINE_LENGTH = 500; // Max chars per grep match line
 
+/**
+ * Compute truncation limits proportional to the model's context window.
+ * For small models (8K-16K), reduces tool output to avoid dominating the context.
+ * For large models (100K+), caps at the default values.
+ */
+export function computeTruncationLimits(contextWindow: number): { maxLines: number; maxBytes: number } {
+	return {
+		maxLines: Math.min(DEFAULT_MAX_LINES, Math.max(200, Math.floor(contextWindow * 0.06))),
+		maxBytes: Math.min(DEFAULT_MAX_BYTES, Math.max(4096, contextWindow * 1.5)),
+	};
+}
+
 export interface TruncationResult {
 	/** The truncated content */
 	content: string;

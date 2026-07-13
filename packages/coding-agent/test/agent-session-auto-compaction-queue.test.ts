@@ -249,6 +249,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 		const model = session.model!;
 
 		// A successful assistant message with high token usage (near context limit)
+		const contextWindow = model.contextWindow ?? 200_000;
+		// Use usage tokens above the compaction threshold for this model's context window
+		const highUsage = Math.floor(contextWindow * 0.99);
 		const successfulAssistant: AssistantMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: "large successful response" }],
@@ -256,11 +259,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 			provider: model.provider,
 			model: model.id,
 			usage: {
-				input: 180_000,
+				input: highUsage,
 				output: 10_000,
 				cacheRead: 0,
 				cacheWrite: 0,
-				totalTokens: 190_000,
+				totalTokens: highUsage + 10_000,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",

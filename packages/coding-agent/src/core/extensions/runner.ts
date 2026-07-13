@@ -16,9 +16,11 @@ import type {
 	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
 	CompactOptions,
+	ContextBreakdown,
 	ContextEvent,
 	ContextEventResult,
 	ContextUsage,
+	EntryRenderer,
 	Extension,
 	ExtensionActions,
 	ExtensionCommandContext,
@@ -111,6 +113,25 @@ const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltI
 interface BeforeAgentStartCombinedResult {
 	messages?: NonNullable<BeforeAgentStartEventResult["message"]>[];
 	systemPrompt?: string;
+}
+
+async function callContextHandlerAbortable<T>(fn: () => Promise<T> | T, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		throw new Error("Agent run aborted");
+	}
+
+	let cleanup = () => {};
+	const abortPromise = new Promise<never>((_resolve, reject) => {
+		const onAbort = () => reject(new Error("Agent run aborted"));
+		signal.addEventListener("abort", onAbort, { once: true });
+		cleanup = () => signal.removeEventListener("abort", onAbort);
+	});
+
+	try {
+		return await Promise.race([Promise.resolve().then(fn), abortPromise]);
+	} finally {
+		cleanup();
+	}
 }
 
 /**
@@ -240,10 +261,12 @@ const noOpUIContext: ExtensionUIContext = {
 	setWidget: () => {},
 	setFooter: () => {},
 	setHeader: () => {},
+	setSidebar: () => {},
 	setTitle: () => {},
 	custom: async () => undefined as never,
 	pasteToEditor: () => {},
 	setEditorText: () => {},
+	setEditorBorderColor: () => {},
 	getEditorText: () => "",
 	editor: async () => undefined,
 	addAutocompleteProvider: () => {},
@@ -276,6 +299,7 @@ export class ExtensionRunner {
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	private getContextBreakdownFn: () => ContextBreakdown | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
@@ -337,6 +361,7 @@ export class ExtensionRunner {
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
+		this.getContextBreakdownFn = contextActions.getContextBreakdown;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
@@ -483,9 +508,9 @@ export class ExtensionRunner {
 					continue;
 				}
 
-				if (builtInKeybinding?.restrictOverride === false) {
+				if (builtInKeybinding) {
 					addDiagnostic(
-						`Extension shortcut conflict: '${key}' is built-in shortcut for ${builtInKeybinding.keybinding} and ${shortcut.extensionPath}. Using ${shortcut.extensionPath}.`,
+						`Extension shortcut '${key}' from ${shortcut.extensionPath} overrides built-in shortcut for ${builtInKeybinding.keybinding}.`,
 						shortcut.extensionPath,
 					);
 				}
@@ -546,6 +571,16 @@ export class ExtensionRunner {
 	getMessageRenderer(customType: string): MessageRenderer | undefined {
 		for (const ext of this.extensions) {
 			const renderer = ext.messageRenderers.get(customType);
+			if (renderer) {
+				return renderer;
+			}
+		}
+		return undefined;
+	}
+
+	getEntryRenderer(customType: string): EntryRenderer | undefined {
+		for (const ext of this.extensions) {
+			const renderer = ext.entryRenderers?.get(customType);
 			if (renderer) {
 				return renderer;
 			}
@@ -673,6 +708,10 @@ export class ExtensionRunner {
 			getContextUsage: () => {
 				runner.assertActive();
 				return runner.getContextUsageFn();
+			},
+			getContextBreakdown: () => {
+				runner.assertActive();
+				return runner.getContextBreakdownFn();
 			},
 			compact: (options) => {
 				runner.assertActive();
@@ -913,6 +952,7 @@ export class ExtensionRunner {
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 		const ctx = this.createContext();
+		const signal = ctx.signal;
 		let currentMessages = structuredClone(messages);
 
 		for (const ext of this.extensions) {
@@ -922,12 +962,17 @@ export class ExtensionRunner {
 			for (const handler of handlers) {
 				try {
 					const event: ContextEvent = { type: "context", messages: currentMessages };
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = signal
+						? await callContextHandlerAbortable(() => handler(event, ctx), signal)
+						: await handler(event, ctx);
 
 					if (handlerResult && (handlerResult as ContextEventResult).messages) {
 						currentMessages = (handlerResult as ContextEventResult).messages!;
 					}
 				} catch (err) {
+					if (signal?.aborted) {
+						throw err;
+					}
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({

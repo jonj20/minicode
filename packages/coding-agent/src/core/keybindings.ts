@@ -52,6 +52,7 @@ export interface AppKeybindings {
 	"app.tree.filter.all": true;
 	"app.tree.filter.cycleForward": true;
 	"app.tree.filter.cycleBackward": true;
+	"app.task.list": true;
 }
 
 export type AppKeybinding = keyof AppKeybindings;
@@ -198,6 +199,10 @@ export const KEYBINDINGS = {
 	"app.tree.filter.cycleBackward": {
 		defaultKeys: "shift+ctrl+o",
 		description: "Tree filter: cycle backward",
+	},
+	"app.task.list": {
+		defaultKeys: "alt+t",
+		description: "Open task list",
 	},
 } as const satisfies KeybindingDefinitions;
 
@@ -367,4 +372,4 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	}
 }
 
-export type { Keybinding, KeyId, KeybindingsConfig };
+export type { Keybinding, KeybindingsConfig, KeyId };

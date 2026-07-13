@@ -51,6 +51,7 @@ export {
 	type ReadToolOptions,
 } from "./read.ts";
 export {
+	computeTruncationLimits,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,

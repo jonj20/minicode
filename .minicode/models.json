@@ -1,0 +1,24 @@
+{
+	"providers": {
+		"llama": {
+			"baseUrl": "http://localhost:18080/v1",
+			"api": "openai-completions",
+			"models": [
+				{
+					"id": "gemma-4-12B-it-heretic-QAT-UD",
+					"name": "gemma-4-12B-it-heretic-QAT-UD",
+					"contextWindow": 65536,
+					"maxTokens": 4096,
+					"cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+				},
+				{
+					"id": "ornith-1.0-9b-Q4_K_M",
+					"name": "ornith-1.0-9b-Q4_K_M",
+					"contextWindow": 131072,
+					"maxTokens": 16384,
+					"cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+				}
+			]
+		}
+	}
+}

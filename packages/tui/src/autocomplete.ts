@@ -305,11 +305,13 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		if (!options.force && textBeforeCursor.startsWith("/")) {
+		// Support both "/" and "$" as command prefixes
+		const commandPrefix = textBeforeCursor.startsWith("/") ? "/" : textBeforeCursor.startsWith("$") ? "$" : null;
+		if (!options.force && commandPrefix) {
 			const spaceIndex = textBeforeCursor.indexOf(" ");
 
 			if (spaceIndex === -1) {
-				const prefix = textBeforeCursor.slice(1);
+				const prefix = textBeforeCursor.slice(commandPrefix.length);
 				const commandItems = this.commands.map((cmd) => {
 					const name = "name" in cmd ? cmd.name : cmd.value;
 					const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
@@ -336,7 +338,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				};
 			}
 
-			const commandName = textBeforeCursor.slice(1, spaceIndex);
+			const commandName = textBeforeCursor.slice(commandPrefix.length, spaceIndex);
 			const argumentText = textBeforeCursor.slice(spaceIndex + 1);
 
 			const command = this.commands.find((cmd) => {
@@ -388,19 +390,27 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const adjustedAfterCursor =
 			isQuotedPrefix && hasTrailingQuoteInItem && hasLeadingQuoteAfterCursor ? afterCursor.slice(1) : afterCursor;
 
-		// Check if we're completing a slash command (prefix starts with "/" but NOT a file path)
-		// Slash commands are at the start of the line and don't contain path separators after the first /
-		const isSlashCommand = prefix.startsWith("/") && beforePrefix.trim() === "" && !prefix.slice(1).includes("/");
-		if (isSlashCommand) {
+		// Check if we're completing a command (prefix starts with "/" or "$" but NOT a file path)
+		// Commands are at the start of the line and don't contain path separators after the prefix
+		const isCommand =
+			(prefix.startsWith("/") || prefix.startsWith("$")) &&
+			beforePrefix.trim() === "" &&
+			!prefix.slice(1).includes("/") &&
+			!prefix.slice(1).includes("$");
+		if (isCommand) {
 			// This is a command name completion
-			const newLine = `${beforePrefix}/${item.value} ${adjustedAfterCursor}`;
+			// If item.value already starts with $ (like $explore), use it directly
+			const cmdValue = item.value.startsWith("$")
+				? item.value
+				: `${prefix.startsWith("/") ? "/" : "$"}${item.value}`;
+			const newLine = `${beforePrefix}${cmdValue} ${adjustedAfterCursor}`;
 			const newLines = [...lines];
 			newLines[cursorLine] = newLine;
 
 			return {
 				lines: newLines,
 				cursorLine,
-				cursorCol: beforePrefix.length + item.value.length + 2, // +2 for "/" and space
+				cursorCol: beforePrefix.length + cmdValue.length + 1, // +1 for space
 			};
 		}
 

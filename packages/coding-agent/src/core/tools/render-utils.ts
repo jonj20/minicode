@@ -83,3 +83,54 @@ export function renderToolPath(
 	if (!value) return theme.fg("toolOutput", "...");
 	return linkPath(theme.fg("accent", shortenPath(value)), value, cwd);
 }
+
+const CODE_EXTENSIONS = new Set([
+	".ts",
+	".tsx",
+	".js",
+	".jsx",
+	".mjs",
+	".cjs",
+	".py",
+	".rb",
+	".rs",
+	".go",
+	".java",
+	".kt",
+	".swift",
+	".c",
+	".h",
+	".cpp",
+	".cc",
+	".cxx",
+	".hpp",
+	".cs",
+	".php",
+	".sh",
+	".bash",
+	".zsh",
+	".ps1",
+	".html",
+	".htm",
+	".css",
+	".scss",
+	".sass",
+	".less",
+	".json",
+	".yaml",
+	".yml",
+	".toml",
+	".xml",
+	".sql",
+	".graphql",
+	".gql",
+	".vue",
+	".svelte",
+	".astro",
+]);
+
+export function isCodeFile(filePath: string): boolean {
+	const ext = filePath.split(".").pop()?.toLowerCase();
+	if (!ext) return false;
+	return CODE_EXTENSIONS.has(`.${ext}`);
+}

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync, readFileSync } from "fs";
+import { hasEmbeddedData, readEmbeddedChangelog } from "../config.ts";
 
 export interface ChangelogEntry {
 	major: number;
@@ -109,62 +110,67 @@ export function normalizeChangelogLinks(markdown: string, version: string | Chan
  * Scans for ## lines and collects content until next ## or EOF
  */
 export function parseChangelog(changelogPath: string): ChangelogEntry[] {
-	if (!existsSync(changelogPath)) {
-		return [];
+	let content: string;
+
+	if (hasEmbeddedData) {
+		const embedded = readEmbeddedChangelog();
+		if (embedded === undefined) {
+			return [];
+		}
+		content = embedded;
+	} else {
+		if (!existsSync(changelogPath)) {
+			return [];
+		}
+		content = readFileSync(changelogPath, "utf-8");
 	}
 
-	try {
-		const content = readFileSync(changelogPath, "utf-8");
-		const lines = content.split("\n");
-		const entries: ChangelogEntry[] = [];
+	const lines = content.split("\n");
+	const entries: ChangelogEntry[] = [];
 
-		let currentLines: string[] = [];
-		let currentVersion: { major: number; minor: number; patch: number } | null = null;
+	let currentLines: string[] = [];
+	let currentVersion: { major: number; minor: number; patch: number } | null = null;
 
-		for (const line of lines) {
-			// Check if this is a version header (## [x.y.z] ...)
-			if (line.startsWith("## ")) {
-				// Save previous entry if exists
-				if (currentVersion && currentLines.length > 0) {
-					entries.push({
-						...currentVersion,
-						content: currentLines.join("\n").trim(),
-					});
-				}
-
-				// Try to parse version from this line
-				const versionMatch = line.match(/##\s+\[?(\d+)\.(\d+)\.(\d+)\]?/);
-				if (versionMatch) {
-					currentVersion = {
-						major: Number.parseInt(versionMatch[1], 10),
-						minor: Number.parseInt(versionMatch[2], 10),
-						patch: Number.parseInt(versionMatch[3], 10),
-					};
-					currentLines = [line];
-				} else {
-					// Reset if we can't parse version
-					currentVersion = null;
-					currentLines = [];
-				}
-			} else if (currentVersion) {
-				// Collect lines for current version
-				currentLines.push(line);
+	for (const line of lines) {
+		// Check if this is a version header (## [x.y.z] ...)
+		if (line.startsWith("## ")) {
+			// Save previous entry if exists
+			if (currentVersion && currentLines.length > 0) {
+				entries.push({
+					...currentVersion,
+					content: currentLines.join("\n").trim(),
+				});
 			}
-		}
 
-		// Save last entry
-		if (currentVersion && currentLines.length > 0) {
-			entries.push({
-				...currentVersion,
-				content: currentLines.join("\n").trim(),
-			});
+			// Try to parse version from this line
+			const versionMatch = line.match(/##\s+\[?(\d+)\.(\d+)\.(\d+)\]?/);
+			if (versionMatch) {
+				currentVersion = {
+					major: Number.parseInt(versionMatch[1], 10),
+					minor: Number.parseInt(versionMatch[2], 10),
+					patch: Number.parseInt(versionMatch[3], 10),
+				};
+				currentLines = [line];
+			} else {
+				// Reset if we can't parse version
+				currentVersion = null;
+				currentLines = [];
+			}
+		} else if (currentVersion) {
+			// Collect lines for current version
+			currentLines.push(line);
 		}
-
-		return entries;
-	} catch (error) {
-		console.error(`Warning: Could not parse changelog: ${error}`);
-		return [];
 	}
+
+	// Save last entry
+	if (currentVersion && currentLines.length > 0) {
+		entries.push({
+			...currentVersion,
+			content: currentLines.join("\n").trim(),
+		});
+	}
+
+	return entries;
 }
 
 /**

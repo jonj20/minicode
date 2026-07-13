@@ -12,7 +12,8 @@
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",
-		"build": "cd packages/tui && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../coding-agent && npm run build",
+		"build": "npx tsx scripts/generate-build-info.ts && cd packages/tui && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../pi-extension-types && echo 'pi-extension-types: no build needed (raw TS)' && cd ../coding-agent && npm run build",
+		"generate-build-info": "npx tsx scripts/generate-build-info.ts",
 		"check": "biome check --write --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && npm run check:shrinkwrap && tsgo --noEmit && npm run check:browser-smoke",
 		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
@@ -57,5 +58,6 @@
 		"gaxios": {
 			"rimraf": "6.1.2"
 		}
-	}
+	},
+	"dependencies": {}
 }

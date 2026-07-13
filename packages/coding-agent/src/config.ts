@@ -2,6 +2,21 @@ import { accessSync, constants, existsSync, readFileSync, realpathSync } from "f
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
+import {
+	EMBEDDED_ASSETS,
+	EMBEDDED_BUILD_INFO,
+	EMBEDDED_CHANGELOG,
+	EMBEDDED_DOCS,
+	EMBEDDED_EXAMPLES,
+	EMBEDDED_EXPORT_HTML,
+	EMBEDDED_INTERNAL_EXTENSIONS,
+	EMBEDDED_PACKAGE_JSON,
+	EMBEDDED_README,
+	EMBEDDED_THEMES,
+} from "./embedded.ts";
+
+export { EMBEDDED_INTERNAL_EXTENSIONS };
+
 import { spawnProcessSync } from "./utils/child-process.ts";
 import { normalizePath } from "./utils/paths.ts";
 
@@ -16,11 +31,68 @@ const __dirname = dirname(__filename);
  * Detect if we're running as a Bun compiled binary.
  * Bun binaries have import.meta.url containing "$bunfs", "~BUN", or "%7EBUN" (Bun's virtual filesystem path)
  */
+declare const Bun: { isCompiledBinary?: () => boolean } | undefined;
 export const isBunBinary =
-	import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+	import.meta.url.includes("$bunfs") ||
+	import.meta.url.includes("~BUN") ||
+	import.meta.url.includes("%7EBUN") ||
+	(typeof Bun !== "undefined" && typeof Bun.isCompiledBinary === "function" && Bun.isCompiledBinary());
 
 /** Detect if Bun is the runtime (compiled binary or bun run) */
 export const isBunRuntime = !!process.versions.bun;
+
+/** Check if embedded data is available (Bun binary mode with full embedding) */
+export const hasEmbeddedData = isBunBinary;
+
+/** Read an embedded theme file by filename (e.g. "dark.json") */
+export function readEmbeddedTheme(name: string): string | undefined {
+	return EMBEDDED_THEMES[name];
+}
+
+/** Read an embedded export-html file by relative path (e.g. "template.html", "vendor/marked.min.js") */
+export function readEmbeddedExportHtml(name: string): string | undefined {
+	return EMBEDDED_EXPORT_HTML[name];
+}
+
+/** Read an embedded asset by filename (returns base64 string) */
+export function readEmbeddedAsset(name: string): string | undefined {
+	return EMBEDDED_ASSETS[name];
+}
+
+/** Get embedded package.json content */
+export function getEmbeddedPackageJson(): string {
+	return EMBEDDED_PACKAGE_JSON;
+}
+
+/** Read embedded README.md content */
+export function readEmbeddedReadme(): string | undefined {
+	return EMBEDDED_README;
+}
+
+/** Read embedded CHANGELOG.md content */
+export function readEmbeddedChangelog(): string | undefined {
+	return EMBEDDED_CHANGELOG;
+}
+
+/** Read embedded doc by relative path (e.g. "providers.md") */
+export function readEmbeddedDoc(name: string): string | undefined {
+	return EMBEDDED_DOCS[name];
+}
+
+/** Read embedded example by relative path */
+export function readEmbeddedExample(name: string): string | undefined {
+	return EMBEDDED_EXAMPLES[name];
+}
+
+/** Get all embedded doc paths */
+export function getEmbeddedDocPaths(): string[] {
+	return Object.keys(EMBEDDED_DOCS);
+}
+
+/** Get all embedded example paths */
+export function getEmbeddedExamplePaths(): string[] {
+	return Object.keys(EMBEDDED_EXAMPLES);
+}
 
 // =============================================================================
 // Install Method Detection
@@ -478,7 +550,11 @@ interface PackageJson {
 
 let pkg: PackageJson = {};
 try {
-	pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
+	if (hasEmbeddedData) {
+		pkg = JSON.parse(EMBEDDED_PACKAGE_JSON) as PackageJson;
+	} else {
+		pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
+	}
 } catch (e: unknown) {
 	const err = e as NodeJS.ErrnoException;
 	if (err.code !== "ENOENT") throw e;
@@ -488,8 +564,17 @@ const piConfigName: string | undefined = pkg.piConfig?.name;
 export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
 export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
-export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
-export const VERSION: string = pkg.version || "0.0.0";
+export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".minicode";
+// Prefer EMBEDDED_BUILD_INFO (from scripts/generate-build-info.ts via generate-embed.ts) over package.json version
+let buildInfo: { version: string } | null = null;
+try {
+	if (EMBEDDED_BUILD_INFO) {
+		buildInfo = JSON.parse(EMBEDDED_BUILD_INFO);
+	}
+} catch {
+	// ignore invalid embedded build info
+}
+export const VERSION: string = buildInfo?.version || pkg.version || "0.0.0";
 
 // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
@@ -508,10 +593,9 @@ export function getShareViewerUrl(gistId: string): string {
 }
 
 // =============================================================================
-// User Config Paths (~/.pi/agent/*)
-// =============================================================================
+// User Config Paths (~/.minicode/agent/*)
 
-/** Get the agent config directory (e.g., ~/.pi/agent/) */
+/** Get the agent config directory (e.g., ~/.minicode/agent/) */
 export function getAgentDir(): string {
 	const envDir = process.env[ENV_AGENT_DIR];
 	if (envDir) {

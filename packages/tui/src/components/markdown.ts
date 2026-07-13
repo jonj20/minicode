@@ -98,6 +98,8 @@ export interface MarkdownTheme {
 export interface MarkdownOptions {
 	/** Preserve source list markers instead of normalizing them. */
 	preserveOrderedListMarkers?: boolean;
+	/** Preserve backslash escape sequences like \\" in rendered output. */
+	preserveBackslashEscapes?: boolean;
 }
 
 interface InlineStyleContext {

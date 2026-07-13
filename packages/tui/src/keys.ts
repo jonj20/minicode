@@ -1398,3 +1398,38 @@ function decodeModifyOtherKeysPrintable(data: string): string | undefined {
 export function decodePrintableKey(data: string): string | undefined {
 	return decodeKittyPrintable(data) ?? decodeModifyOtherKeysPrintable(data);
 }
+
+// ── Mouse event parsing ───────────────────────────────────────────
+
+export interface MouseEvent {
+	button: number;
+	column: number;
+	row: number;
+	released: boolean;
+}
+
+/**
+ * Parse SGR mouse event: \x1b[<button;column;rowM or \x1b[<button;column;rowm
+ * Returns null if not a mouse event.
+ */
+export function parseMouseEvent(data: string): MouseEvent | null {
+	// SGR mouse format: ESC [ < button ; column ; row M/m
+	const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
+	if (!match) return null;
+
+	return {
+		button: Number.parseInt(match[1]!, 10),
+		column: Number.parseInt(match[2]!, 10),
+		row: Number.parseInt(match[3]!, 10),
+		released: match[4] === "m",
+	};
+}
+
+/**
+ * Check if a mouse event is a scroll wheel event.
+ */
+export function isMouseScroll(event: MouseEvent): "up" | "down" | null {
+	if (event.button === 64) return "up";
+	if (event.button === 65) return "down";
+	return null;
+}

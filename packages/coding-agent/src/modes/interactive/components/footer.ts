@@ -1,14 +1,61 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import * as os from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
+function isLegacyWindowsConsole(): boolean {
+	if (process.platform !== "win32") return false;
+	if (process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuPID) return false;
+	return true;
+}
+
 import type { AgentSession } from "../../../core/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { theme } from "../theme/theme.ts";
 
+const TASKS_FILE = join(os.homedir(), ".minicode", "agent", "tasks", "tasks.jsonl");
+
 /**
  * Sanitize text for display in a single-line status.
  * Removes newlines, tabs, carriage returns, and other control characters.
  */
+function _buildTaskStatusLine(): string {
+	if (!existsSync(TASKS_FILE)) return "";
+
+	try {
+		const content = readFileSync(TASKS_FILE, "utf-8");
+		const lines = content.split("\n").filter(Boolean);
+		const tasks = new Map<string, { id: string; status: string; summary: string }>();
+
+		for (const line of lines) {
+			try {
+				const entry = JSON.parse(line) as Record<string, unknown>;
+				if (entry.type !== "task") continue;
+				if (entry.action === "create" && entry.task) {
+					const task = entry.task as { id: string; status: string; summary: string };
+					tasks.set(task.id, { id: task.id, status: task.status, summary: task.summary });
+				} else if (entry.action === "update_status" && typeof entry.id === "string") {
+					const existing = tasks.get(entry.id);
+					if (existing) {
+						existing.status = entry.newStatus as string;
+					}
+				}
+			} catch {
+				// skip malformed lines
+			}
+		}
+
+		const inProgress = [...tasks.values()].find((t) => t.status === "in_progress");
+		if (!inProgress) return "";
+
+		const summary = sanitizeStatusText(inProgress.summary);
+		return `\u25C9 ${summary}`;
+	} catch {
+		return "";
+	}
+}
+
 function sanitizeStatusText(text: string): string {
 	// Replace newlines, tabs, carriage returns with space, then collapse multiple spaces
 	return text
@@ -40,6 +87,26 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 
 	if (!isInsideHome) return cwd;
 	return relativeToHome === "" ? "~" : `~${sep}${relativeToHome}`;
+}
+
+function buildStatusPrefix(ext: ReadonlyMap<string, string>): string {
+	const planMode = ext.get("plan-mode");
+	return planMode ? `${planMode} ` : "";
+}
+
+/**
+ * Build keybinding hints for the footer stats line.
+ * When idle: show tab/@/$/ prefix hints. When streaming: show esc interrupt.
+ */
+function buildFooterKeybindingHints(isStreaming: boolean): string {
+	if (isStreaming) {
+		return theme.fg("text", "esc") + theme.fg("dim", " interrupt");
+	}
+	const tab = theme.fg("text", "tab") + theme.fg("dim", " 切换模式");
+	const addFile = theme.fg("text", "@") + theme.fg("dim", " 添加文件");
+	const subagent = theme.fg("text", "$") + theme.fg("dim", " 子智能体");
+	const command = theme.fg("text", "/") + theme.fg("dim", " 唤起命令");
+	return `${tab}  ${addFile}  ${subagent}  ${command}`;
 }
 
 /**
@@ -164,81 +231,70 @@ export class FooterComponent implements Component {
 			statsParts.push(`${theme.fg("dim", "•")} ${theme.bold(theme.fg("warning", "xp"))}`);
 		}
 
-		let statsLeft = statsParts.join(" ");
+		const statsLeft = statsParts.join(" ");
 
 		// Add model name on the right side, plus thinking level if model supports it
 		const modelName = state.model?.id || "no-model";
 
-		let statsLeftWidth = visibleWidth(statsLeft);
-
-		// If statsLeft is too wide, truncate it
-		if (statsLeftWidth > width) {
-			statsLeft = truncateToWidth(statsLeft, width, "...");
-			statsLeftWidth = visibleWidth(statsLeft);
-		}
-
-		// Calculate available space for padding (minimum 2 spaces between stats and model)
-		const minPadding = 2;
-
-		// Add thinking level indicator if model supports reasoning
-		let rightSideWithoutProvider = modelName;
+		// Build LLM info line
+		let llmInfo = modelName;
 		if (state.model?.reasoning) {
 			const thinkingLevel = state.thinkingLevel || "off";
-			rightSideWithoutProvider =
-				thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
+			llmInfo = thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
 		}
-
-		// Prepend the provider in parentheses if there are multiple providers and there's enough room
-		let rightSide = rightSideWithoutProvider;
 		if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
-			rightSide = `(${state.model!.provider}) ${rightSideWithoutProvider}`;
-			if (statsLeftWidth + minPadding + visibleWidth(rightSide) > width) {
-				// Too wide, fall back
-				rightSide = rightSideWithoutProvider;
-			}
+			llmInfo = `(${state.model!.provider}) ${llmInfo}`;
 		}
 
-		const rightSideWidth = visibleWidth(rightSide);
-		const totalNeeded = statsLeftWidth + minPadding + rightSideWidth;
-
-		let statsLine: string;
-		if (totalNeeded <= width) {
-			// Both fit - add padding to right-align model
-			const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-			statsLine = statsLeft + padding + rightSide;
-		} else {
-			// Need to truncate right side
-			const availableForRight = width - statsLeftWidth - minPadding;
-			if (availableForRight > 0) {
-				const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
-				const truncatedRightWidth = visibleWidth(truncatedRight);
-				const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedRightWidth));
-				statsLine = statsLeft + padding + truncatedRight;
-			} else {
-				// Not enough space for right side at all
-				statsLine = statsLeft;
-			}
-		}
-
-		// Apply dim to each part separately. statsLeft may contain color codes (for context %)
-		// that end with a reset, which would clear an outer dim wrapper. So we dim the parts
-		// before and after the colored section independently.
+		// Apply colors
 		const dimStatsLeft = theme.fg("dim", statsLeft);
-		const remainder = statsLine.slice(statsLeft.length); // padding + rightSide
-		const dimRemainder = theme.fg("dim", remainder);
+		const softWhiteLlm = theme.fg("softWhite", llmInfo);
 
-		const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
-		const lines = [pwdLine, dimStatsLeft + dimRemainder];
+		// When sidebar is present, footer only gets (width - sidebarWidth) columns
+		// Sidebar is 5 chars wide (│ + 4 content chars)
+		const hasSidebar = !isLegacyWindowsConsole();
+		const footerWidth = hasSidebar ? width - 5 : width;
 
-		// Add extension statuses on a single line, sorted by key alphabetically
-		const extensionStatuses = this.footerData.getExtensionStatuses();
-		if (extensionStatuses.size > 0) {
-			const sortedStatuses = Array.from(extensionStatuses.entries())
-				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => sanitizeStatusText(text));
-			const statusLine = sortedStatuses.join(" ");
-			// Truncate to terminal width with dim ellipsis for consistency with footer style
-			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+		const _pwdLine = truncateToWidth(theme.fg("dim", pwd), footerWidth, theme.fg("dim", "..."));
+		// On legacy Windows (no sidebar), show pwd and extension statuses in footer
+		const statusPrefix = buildStatusPrefix(this.footerData.getExtensionStatuses());
+		const truncatedLlm = truncateToWidth(statusPrefix + softWhiteLlm, footerWidth, theme.fg("softWhite", "..."));
+
+		// Build stats line with keybinding hints on the right
+		const isStreaming = this.session.isStreaming;
+		const hints = buildFooterKeybindingHints(isStreaming);
+		const dimHints = theme.fg("dim", hints);
+
+		// Calculate available width for stats + hints
+		const statsVisibleWidth = visibleWidth(dimStatsLeft);
+		const hintsVisibleWidth = visibleWidth(dimHints);
+		const gap = 2;
+		let truncatedStats: string;
+		if (statsVisibleWidth + gap + hintsVisibleWidth <= footerWidth) {
+			// Both fit: stats on left, hints on right with padding
+			const padding = " ".repeat(Math.max(0, footerWidth - statsVisibleWidth - hintsVisibleWidth));
+			truncatedStats = dimStatsLeft + padding + dimHints;
+		} else {
+			// Truncate stats to make room for hints
+			const maxStatsWidth = Math.max(0, footerWidth - hintsVisibleWidth - gap);
+			const truncatedStatsText = truncateToWidth(dimStatsLeft, maxStatsWidth, theme.fg("dim", "..."));
+			truncatedStats =
+				truncatedStatsText +
+				" ".repeat(Math.max(0, footerWidth - visibleWidth(truncatedStatsText) - hintsVisibleWidth)) +
+				dimHints;
+		}
+		const lines = hasSidebar ? [truncatedLlm, truncatedStats] : [_pwdLine, truncatedLlm, truncatedStats];
+
+		if (!hasSidebar) {
+			// Extension statuses — shown in footer when sidebar unavailable
+			const extensionStatuses = this.footerData.getExtensionStatuses();
+			if (extensionStatuses.size > 0) {
+				const sortedStatuses = Array.from(extensionStatuses.entries())
+					.sort(([a], [b]) => a.localeCompare(b))
+					.map(([, text]) => sanitizeStatusText(text));
+				const statusLine = sortedStatuses.join(" ");
+				lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+			}
 		}
 
 		return lines;

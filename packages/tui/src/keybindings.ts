@@ -30,8 +30,8 @@ export interface Keybindings {
 	// Generic input actions
 	"tui.input.newLine": true;
 	"tui.input.submit": true;
-	"tui.input.tab": true;
 	"tui.input.copy": true;
+	"tui.input.tab": true;
 	// Generic selection actions
 	"tui.select.up": true;
 	"tui.select.down": true;
@@ -39,6 +39,9 @@ export interface Keybindings {
 	"tui.select.pageDown": true;
 	"tui.select.confirm": true;
 	"tui.select.cancel": true;
+	// Sidebar
+	"tui.sidebar.toggle": true;
+	"tui.sidebar.focus": true;
 }
 
 export type Keybinding = keyof Keybindings;
@@ -117,8 +120,8 @@ export const TUI_KEYBINDINGS = {
 	"tui.editor.undo": { defaultKeys: "ctrl+-", description: "Undo" },
 	"tui.input.newLine": { defaultKeys: ["shift+enter", "ctrl+j"], description: "Insert newline" },
 	"tui.input.submit": { defaultKeys: "enter", description: "Submit input" },
-	"tui.input.tab": { defaultKeys: "tab", description: "Tab / autocomplete" },
 	"tui.input.copy": { defaultKeys: "ctrl+c", description: "Copy selection" },
+	"tui.input.tab": { defaultKeys: [], description: "Tab key" },
 	"tui.select.up": { defaultKeys: "up", description: "Move selection up" },
 	"tui.select.down": { defaultKeys: "down", description: "Move selection down" },
 	"tui.select.pageUp": { defaultKeys: "pageUp", description: "Selection page up" },
@@ -130,6 +133,15 @@ export const TUI_KEYBINDINGS = {
 	"tui.select.cancel": {
 		defaultKeys: ["escape", "ctrl+c"],
 		description: "Cancel selection",
+	},
+	// Sidebar
+	"tui.sidebar.toggle": {
+		defaultKeys: "ctrl+shift+s",
+		description: "Toggle sidebar",
+	},
+	"tui.sidebar.focus": {
+		defaultKeys: "ctrl+shift+f",
+		description: "Focus/unfocus sidebar",
 	},
 } as const satisfies KeybindingDefinitions;
 

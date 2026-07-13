@@ -1,0 +1,22 @@
+{
+	"name": "@tsi-lab/minicode",
+	"version": "0.0.1",
+	"description": "minicode CLI — AI coding agent",
+	"type": "module",
+	"bin": {
+		"minicode": "./cli.js"
+	},
+	"main": "./index.js",
+	"types": "./index.d.ts",
+	"files": [
+		"index.js",
+		"cli.js",
+		"index.d.ts",
+		"build-info.js",
+		"build-info.d.ts"
+	],
+	"dependencies": {
+		"@earendil-works/pi-coding-agent": "^0.80.3"
+	},
+	"license": "MIT"
+}

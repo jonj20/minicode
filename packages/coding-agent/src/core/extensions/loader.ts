@@ -12,6 +12,10 @@ import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import type { KeyId } from "@earendil-works/pi-tui";
 import * as _bundledPiTui from "@earendil-works/pi-tui";
+import * as _bundledMcpClient from "@modelcontextprotocol/sdk/client/index.js";
+import * as _bundledMcpSse from "@modelcontextprotocol/sdk/client/sse.js";
+import * as _bundledMcpStdio from "@modelcontextprotocol/sdk/client/stdio.js";
+import * as _bundledMcpStreamableHttp from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createJiti } from "jiti/static";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
@@ -19,7 +23,13 @@ import { createJiti } from "jiti/static";
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
-import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
+import {
+	CONFIG_DIR_NAME,
+	EMBEDDED_INTERNAL_EXTENSIONS,
+	getAgentDir,
+	getPackageDir,
+	isBunBinary,
+} from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.ts";
@@ -29,7 +39,9 @@ import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
+import registerBuiltins from "./register-builtins.ts";
 import type {
+	EntryRenderer,
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
@@ -64,6 +76,10 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@mariozechner/pi-ai/compat": _bundledPiAiCompat,
 	"@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
 	"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
+	"@modelcontextprotocol/sdk/client/index.js": _bundledMcpClient,
+	"@modelcontextprotocol/sdk/client/stdio.js": _bundledMcpStdio,
+	"@modelcontextprotocol/sdk/client/sse.js": _bundledMcpSse,
+	"@modelcontextprotocol/sdk/client/streamableHttp.js": _bundledMcpStreamableHttp,
 };
 
 const require = createRequire(import.meta.url);
@@ -269,6 +285,12 @@ function createExtensionAPI(
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
+		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
+			runtime.assertActive();
+			extension.entryRenderers ??= new Map();
+			extension.entryRenderers.set(customType, renderer as EntryRenderer);
+		},
+
 		// Flag access - checks extension registered it, reads from runtime
 		getFlag(name: string): boolean | string | undefined {
 			runtime.assertActive();
@@ -415,6 +437,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		handlers: new Map(),
 		tools: new Map(),
 		messageRenderers: new Map(),
+		entryRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
@@ -503,6 +526,21 @@ async function loadExtensionsInternal(
 		}
 	}
 
+	if (isBunBinary && Object.keys(EMBEDDED_INTERNAL_EXTENSIONS).length > 0) {
+		try {
+			const internalExt = createExtension("<internal-extensions:embedded>", "<internal-extensions:embedded>");
+			const api = createExtensionAPI(internalExt, resolvedRuntime, resolvedCwd, resolvedEventBus);
+			await registerBuiltins(api);
+			extensions.unshift(internalExt);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push({
+				path: "internal-extensions:embedded",
+				error: `Failed to load embedded extensions: ${message}`,
+			});
+		}
+	}
+
 	return {
 		extensions,
 		errors,
@@ -516,7 +554,7 @@ export async function loadExtensions(
 	eventBus?: EventBus,
 	runtime?: ExtensionRuntime,
 ): Promise<LoadExtensionsResult> {
-	return loadExtensionsInternal(paths, cwd, eventBus, runtime);
+	return loadExtensionsInternal(paths, cwd, eventBus, runtime, false);
 }
 
 export async function loadExtensionsCached(
@@ -645,6 +683,7 @@ export async function discoverAndLoadExtensions(
 	cwd: string,
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
+	options?: { skipInternal?: boolean },
 ): Promise<LoadExtensionsResult> {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
@@ -660,6 +699,15 @@ export async function discoverAndLoadExtensions(
 			}
 		}
 	};
+
+	// 0. Built-in internal extensions (bundled with the package)
+	if (!isBunBinary && !options?.skipInternal) {
+		const internalExtDir = path.join(getPackageDir(), "..", "internal-extensions");
+		const internalEntries = resolveExtensionEntries(internalExtDir);
+		if (internalEntries) {
+			addPaths(internalEntries);
+		}
+	}
 
 	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
 	const localExtDir = path.join(resolvedCwd, CONFIG_DIR_NAME, "extensions");
@@ -687,5 +735,7 @@ export async function discoverAndLoadExtensions(
 		addPaths([resolved]);
 	}
 
-	return loadExtensions(allPaths, resolvedCwd, eventBus);
+	const loadedResult = await loadExtensions(allPaths, resolvedCwd, eventBus);
+
+	return loadedResult;
 }

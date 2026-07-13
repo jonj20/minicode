@@ -21,6 +21,7 @@ export * from "./auth/context.ts";
 export * from "./auth/credential-store.ts";
 export * from "./auth/helpers.ts";
 export * from "./auth/types.ts";
+export { complete, completeSimple, stream } from "./compat.ts";
 export * from "./images-models.ts";
 export * from "./models.ts";
 export * from "./providers/faux.ts";

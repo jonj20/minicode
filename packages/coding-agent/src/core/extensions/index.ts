@@ -40,6 +40,7 @@ export type {
 	BuildSystemPromptOptions,
 	// Context
 	CompactOptions,
+	ContextBreakdown,
 	// Events - Agent
 	ContextEvent,
 	// Event Results
@@ -50,6 +51,9 @@ export type {
 	EditorFactory,
 	EditToolCallEvent,
 	EditToolResultEvent,
+	// Message and Entry Rendering
+	EntryRenderer,
+	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
 	Extension,
@@ -91,7 +95,6 @@ export type {
 	LsToolResultEvent,
 	// Events - Message
 	MessageEndEvent,
-	// Message Rendering
 	MessageRenderer,
 	MessageRenderOptions,
 	MessageStartEvent,
@@ -128,6 +131,7 @@ export type {
 	SessionBeforeTreeResult,
 	SessionCompactEvent,
 	SessionEvent,
+	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,

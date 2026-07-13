@@ -21,9 +21,9 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -31,9 +31,9 @@ import {
 	isContextOverflow,
 	isRetryableAssistantError,
 	modelsAreEqual,
-	resetApiProviders,
-	streamSimple,
-} from "@earendil-works/pi-ai/compat";
+} from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
+import { resetApiProviders, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -55,6 +55,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
+	type ContextBreakdown,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -81,11 +82,12 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { route as localRoute } from "./local-router/router.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -136,6 +138,7 @@ export type AgentSessionEvent =
 			followUp: readonly string[];
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
@@ -252,6 +255,15 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 	return tokens;
 }
 
+function hasCodeBlock(message: AgentMessage): boolean {
+	if (!("content" in message)) return false;
+	const text = (message as { content: { type: string; text: string }[] }).content
+		.filter((c: { type: string }) => c.type === "text")
+		.map((c: { text: string }) => c.text)
+		.join("");
+	return text.includes("```") || /`[^`]+`/.test(text);
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -285,6 +297,8 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _consecutiveCompactionCount = 0;
+	private static readonly MAX_CONSECUTIVE_COMPACTIONS = 3;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -300,6 +314,11 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
+
+	// Safety guard: per-prompt max steps + infinite loop detection
+	private _perPromptTurnCount = 0;
+	private _perPromptFileEditCount = new Map<string, number>();
+	private _safetyTriggered = false;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -328,9 +347,21 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
+	// Local routing: intercept simple requests before LLM
+	private _localRoutingEnabled = true;
+
+	get localRoutingEnabled(): boolean {
+		return this._localRoutingEnabled;
+	}
+
+	set localRoutingEnabled(val: boolean) {
+		this._localRoutingEnabled = val;
+	}
+
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	private _systemPromptOverride?: string;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -352,6 +383,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentNextTurnRefresh();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -435,6 +467,32 @@ export class AgentSession {
 		};
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+			// If safety already triggered, terminate tool batch immediately
+			if (this._safetyTriggered) {
+				return { terminate: true };
+			}
+
+			// Track file edits for infinite loop detection
+			if (toolCall.name === "edit" || toolCall.name === "write") {
+				const filePath = (args as Record<string, unknown>)?.path;
+				if (typeof filePath === "string") {
+					const count = (this._perPromptFileEditCount.get(filePath) ?? 0) + 1;
+					this._perPromptFileEditCount.set(filePath, count);
+					if (count > 5) {
+						this._safetyTriggered = true;
+						this.agent.abort();
+						// Mark the current assistant message as aborted so the
+						// stopReason reflects the safety guard, not normal completion.
+						const msgs = this.agent.state.messages;
+						const last = msgs[msgs.length - 1];
+						if (last?.role === "assistant") {
+							last.stopReason = "aborted";
+						}
+						return { terminate: true };
+					}
+				}
+			}
+
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_result")) {
 				return undefined;
@@ -458,6 +516,29 @@ export class AgentSession {
 				content: hookResult.content,
 				details: hookResult.details,
 				isError: hookResult.isError ?? isError,
+			};
+		};
+	}
+
+	private _installAgentNextTurnRefresh(): void {
+		const previousPrepareNextTurnWithContext =
+			this.agent.prepareNextTurnWithContext ??
+			(this.agent.prepareNextTurn
+				? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
+				: undefined);
+		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
+			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
+			const previousContext = previousSnapshot?.context ?? turn.context;
+
+			return {
+				...previousSnapshot,
+				context: {
+					...previousContext,
+					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+					tools: this.agent.state.tools.slice(),
+				},
+				model: this.agent.state.model,
+				thinkingLevel: this.agent.state.thinkingLevel,
 			};
 		};
 	}
@@ -618,6 +699,11 @@ export class AgentSession {
 		} else if (event.type === "agent_end") {
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
 		} else if (event.type === "turn_start") {
+			this._perPromptTurnCount++;
+			if (this._perPromptTurnCount > 50) {
+				this._safetyTriggered = true;
+				this.agent.abort();
+			}
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",
 				turnIndex: this._turnIndex,
@@ -824,7 +910,7 @@ export class AgentSession {
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -937,6 +1023,7 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			compactPrompt: this.model !== undefined && this.model.contextWindow <= 16384,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -947,11 +1034,13 @@ export class AgentSession {
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		try {
+			this._consecutiveCompactionCount = 0;
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
 			}
 		} finally {
+			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
 		}
 	}
@@ -1055,6 +1144,21 @@ export class AgentSession {
 				return;
 			}
 
+			// Local routing: intercept simple requests before LLM
+			if (this._localRoutingEnabled && !currentImages) {
+				const { result, messages } = await localRoute(expandedText, this._cwd);
+				if (result.action === "local") {
+					for (const msg of messages) {
+						const agentMsg = msg as AgentMessage;
+						this.agent.state.messages.push(agentMsg);
+						this._emit({ type: "message_start", message: agentMsg });
+						this._emit({ type: "message_end", message: agentMsg });
+					}
+					preflightResult?.(true);
+					return;
+				}
+			}
+
 			// Flush any pending bash messages before the new prompt
 			this._flushPendingBashMessages();
 
@@ -1075,17 +1179,11 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
-			// Check if we need to compact before sending (catches aborted responses)
+			// Check if we need to compact before sending (catches aborted responses).
+			// The user's new prompt is sent below, so do not call agent.continue() here.
 			const lastAssistant = this._findLastAssistantMessage();
-			if (lastAssistant && (await this._checkCompaction(lastAssistant, false))) {
-				try {
-					await this.agent.continue();
-					while (await this._handlePostAgentRun()) {
-						await this.agent.continue();
-					}
-				} finally {
-					this._flushPendingBashMessages();
-				}
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false);
 			}
 
 			// Build messages array (custom message if any, then user message)
@@ -1101,6 +1199,22 @@ export class AgentSession {
 				content: userContent,
 				timestamp: Date.now(),
 			});
+
+			// Auto-generate session name from first user message
+			if (!this.sessionManager.getSessionName()) {
+				const existingUserMessages = this.agent.state.messages.filter((m) => m.role === "user").length;
+				if (existingUserMessages === 0) {
+					const name = expandedText
+						.replace(/[\r\n]+/g, " ")
+						.replace(/\s+/g, " ")
+						.trim()
+						.slice(0, 30);
+					if (name.length > 0) {
+						this.sessionManager.appendSessionInfo(name);
+						this._emit({ type: "session_info_changed", name });
+					}
+				}
+			}
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
 			for (const msg of this._pendingNextTurnMessages) {
@@ -1129,10 +1243,12 @@ export class AgentSession {
 				}
 			}
 			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt) {
+			if (result?.systemPrompt !== undefined) {
+				this._systemPromptOverride = result.systemPrompt;
 				this.agent.state.systemPrompt = result.systemPrompt;
 			} else {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
+				this._systemPromptOverride = undefined;
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 			}
 		} catch (error) {
@@ -1145,6 +1261,10 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
+		this._perPromptTurnCount = 0;
+		this._perPromptFileEditCount.clear();
+		this._safetyTriggered = false;
+		this._consecutiveCompactionCount = 0;
 		await this._runAgentPrompt(messages);
 	}
 
@@ -1664,7 +1784,7 @@ export class AgentSession {
 			const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
 
 			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
+			const settings = this.settingsManager.getCompactionSettings(this.model.contextWindow);
 
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
@@ -1815,7 +1935,7 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings();
+		const settings = this.settingsManager.getCompactionSettings(this.model?.contextWindow);
 		if (!settings.enabled) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
@@ -1909,7 +2029,7 @@ export class AgentSession {
 	 * Internal: Run auto-compaction with events.
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings();
+		const settings = this.settingsManager.getCompactionSettings(this.model?.contextWindow);
 		let started = false;
 
 		try {
@@ -2051,12 +2171,25 @@ export class AgentSession {
 				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
 					this.agent.state.messages = messages.slice(0, -1);
 				}
+				this._consecutiveCompactionCount = 0;
 				return true;
 			}
 
-			// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
-			// Continue once so queued messages are delivered.
-			return this.agent.hasQueuedMessages();
+			// Auto-compaction completed for threshold reason.
+			// Continue so the agent can resume work without manual intervention.
+			// Safety: stop after MAX_CONSECUTIVE_COMPACTIONS to prevent infinite loops.
+			this._consecutiveCompactionCount++;
+			if (this._consecutiveCompactionCount >= AgentSession.MAX_CONSECUTIVE_COMPACTIONS) {
+				this._consecutiveCompactionCount = 0;
+				return false;
+			}
+			// Overflow with willRetry=false means the response was successful but exceeded
+			// the context window. The assistant answer already completed and
+			// agent.continue() cannot continue from an assistant message, so don't retry.
+			if (reason === "overflow" && !willRetry) {
+				return false;
+			}
+			return true;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			if (started) {
@@ -2239,7 +2372,11 @@ export class AgentSession {
 					});
 				},
 				appendEntry: (customType, data) => {
-					this.sessionManager.appendCustomEntry(customType, data);
+					const entryId = this.sessionManager.appendCustomEntry(customType, data);
+					const entry = this.sessionManager.getEntry(entryId);
+					if (entry) {
+						this._emit({ type: "entry_appended", entry });
+					}
 				},
 				setSessionName: (name) => {
 					this.setSessionName(name);
@@ -2280,6 +2417,7 @@ export class AgentSession {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
+				getContextBreakdown: () => this.getContextBreakdown(),
 				compact: (options) => {
 					void (async () => {
 						try {
@@ -2689,7 +2827,9 @@ export class AgentSession {
 	 */
 	setSessionName(name: string): void {
 		this.sessionManager.appendSessionInfo(name);
-		this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });
+		const event = { type: "session_info_changed", name: this.sessionManager.getSessionName() } as const;
+		this._emit(event);
+		void this._extensionRunner.emit(event);
 	}
 
 	// =========================================================================
@@ -3017,6 +3157,65 @@ export class AgentSession {
 			tokens: estimate.tokens,
 			contextWindow,
 			percent,
+		};
+	}
+
+	/** Get token breakdown by category (system/tool/code/history) and cache stats. */
+	getContextBreakdown(): ContextBreakdown | undefined {
+		const model = this.model;
+		if (!model) return undefined;
+
+		const system = estimateTokens({
+			role: "system",
+			content: [{ type: "text", text: this.systemPrompt }],
+		} as unknown as AgentMessage);
+
+		let tool = 0;
+		let code = 0;
+		let history = 0;
+		let totalCacheRead = 0;
+		let totalCacheWrite = 0;
+
+		for (const message of this.messages) {
+			const tokens = estimateTokens(message);
+			if (message.role === "toolResult") {
+				tool += tokens;
+			} else if (message.role === "assistant") {
+				const assistantMsg = message as AssistantMessage;
+				totalCacheRead += assistantMsg.usage.cacheRead;
+				totalCacheWrite += assistantMsg.usage.cacheWrite;
+				const hasToolCall = assistantMsg.content.some((c: { type: string }) => c.type === "toolCall");
+				if (hasToolCall) {
+					tool += tokens;
+				} else if (hasCodeBlock(message)) {
+					code += tokens;
+				} else {
+					history += tokens;
+				}
+			} else if (message.role === "user") {
+				if (hasCodeBlock(message)) {
+					code += tokens;
+				} else {
+					history += tokens;
+				}
+			} else {
+				history += tokens;
+			}
+		}
+
+		const total = system + tool + code + history;
+		const cacheHitRate =
+			totalCacheRead + totalCacheWrite > 0 ? (totalCacheRead / (totalCacheRead + totalCacheWrite)) * 100 : undefined;
+
+		return {
+			system,
+			tool,
+			code,
+			history,
+			total,
+			cacheRead: totalCacheRead,
+			cacheWrite: totalCacheWrite,
+			cacheHitRate,
 		};
 	}
 

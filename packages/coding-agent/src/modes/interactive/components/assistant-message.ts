@@ -1,10 +1,18 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+function formatDuration(ms: number): string {
+	if (ms < 1000) {
+		return `${ms}ms`;
+	}
+	const seconds = ms / 1000;
+	return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
+}
 
 /**
  * Component that renders a complete assistant message
@@ -13,23 +21,31 @@ export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
 	private markdownTheme: MarkdownTheme;
-	private hiddenThinkingLabel: string;
+	private outputPad: number;
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
+	private thinkingDurations: Map<number, number> = new Map();
+	private expandedBlocks = new Set<number>();
+
+	/** Maps child component to its content index for reverse lookup on click */
+	private childToContentIndex: Map<Component, number> = new Map();
+
+	/** Ordered list of content indices for collapsed thinking headers */
+	private collapsedThinkingIndices: number[] = [];
 
 	constructor(
 		message?: AssistantMessage,
 		hideThinkingBlock = false,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
-		hiddenThinkingLabel = "Thinking...",
+		_hiddenThinkingLabel = "Thinking...",
+		outputPad = 1,
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
-		this.hiddenThinkingLabel = hiddenThinkingLabel;
+		this.outputPad = outputPad;
 
-		// Container for text/thinking content
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
 
@@ -52,11 +68,49 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	setHiddenThinkingLabel(label: string): void {
-		this.hiddenThinkingLabel = label;
+	setHiddenThinkingLabel(_label: string): void {}
+
+	setOutputPad(padding: number): void {
+		this.outputPad = padding;
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
+	}
+
+	setThinkingDurations(durations: Map<number, number>): void {
+		this.thinkingDurations = durations;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
+	setExpandedBlocks(blocks: Set<number>): void {
+		this.expandedBlocks = blocks;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
+	/**
+	 * Given a rendered line number (relative to this component), return the
+	 * content index of the thinking block at that line, or -1.
+	 */
+	getThinkingBlockAtLine(lineIndex: number, renderWidth: number): number {
+		let currentLine = 0;
+		for (const child of this.contentContainer.children) {
+			const childHeight = child.render(renderWidth).length;
+			if (childHeight === 0) continue;
+
+			if (lineIndex >= currentLine && lineIndex < currentLine + childHeight) {
+				const idx = this.childToContentIndex.get(child);
+				if (idx != null) {
+					return idx;
+				}
+				return -1;
+			}
+			currentLine += childHeight;
+		}
+		return -1;
 	}
 
 	override render(width: number): string[] {
@@ -72,8 +126,9 @@ export class AssistantMessageComponent extends Container {
 
 	updateContent(message: AssistantMessage): void {
 		this.lastMessage = message;
+		this.collapsedThinkingIndices = [];
+		this.childToContentIndex.clear();
 
-		// Clear content container
 		this.contentContainer.clear();
 
 		const hasVisibleContent = message.content.some(
@@ -84,63 +139,75 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(new Spacer(1));
 		}
 
-		// Render content in order
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
-				// Assistant text messages with no background - trim the text
-				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, this.markdownTheme));
+				this.contentContainer.addChild(new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme));
 			} else if (content.type === "thinking" && content.thinking.trim()) {
-				// Add spacing only when another visible assistant content block follows.
-				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
 				const hasVisibleContentAfter = message.content
 					.slice(i + 1)
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
+				const addChild = (child: Component): void => {
+					this.childToContentIndex.set(child, i);
+					this.contentContainer.addChild(child);
+				};
+
 				if (this.hideThinkingBlock) {
-					// Show static thinking label when hidden
-					this.contentContainer.addChild(
-						new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), 1, 0),
-					);
-					if (hasVisibleContentAfter) {
-						this.contentContainer.addChild(new Spacer(1));
+					const isExpanded = this.expandedBlocks.has(i);
+					if (!isExpanded) {
+						const duration = this.thinkingDurations.get(i);
+						const label = duration != null ? `+ Thought: ${formatDuration(duration)}` : "Thinking...";
+						addChild(new Text(theme.italic(theme.fg("thinkingText", label)), this.outputPad, 0));
+						this.collapsedThinkingIndices.push(i);
+					} else {
+						addChild(
+							new Markdown(content.thinking.trim(), this.outputPad, 0, this.markdownTheme, {
+								color: (text: string) => theme.fg("thinkingText", text),
+								italic: true,
+							}),
+						);
 					}
 				} else {
-					// Thinking traces in thinkingText color, italic
-					this.contentContainer.addChild(
-						new Markdown(content.thinking.trim(), 1, 0, this.markdownTheme, {
+					addChild(
+						new Markdown(content.thinking.trim(), this.outputPad, 0, this.markdownTheme, {
 							color: (text: string) => theme.fg("thinkingText", text),
 							italic: true,
 						}),
 					);
-					if (hasVisibleContentAfter) {
-						this.contentContainer.addChild(new Spacer(1));
-					}
+				}
+				if (hasVisibleContentAfter) {
+					this.contentContainer.addChild(new Spacer(1));
 				}
 			}
 		}
 
-		// Check if aborted - show after partial content
-		// But only if there are no tool calls (tool execution components will show the error)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		this.hasToolCalls = hasToolCalls;
-		if (!hasToolCalls) {
+		if (message.stopReason === "length") {
+			this.contentContainer.addChild(new Spacer(1));
+			this.contentContainer.addChild(
+				new Text(
+					theme.fg(
+						"error",
+						"Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.",
+					),
+					this.outputPad,
+					0,
+				),
+			);
+		} else if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
 				const abortMessage =
 					message.errorMessage && message.errorMessage !== "Request was aborted"
 						? message.errorMessage
 						: "Operation aborted";
-				if (hasVisibleContent) {
-					this.contentContainer.addChild(new Spacer(1));
-				} else {
-					this.contentContainer.addChild(new Spacer(1));
-				}
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), 1, 0));
+				this.contentContainer.addChild(new Spacer(1));
+				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), this.outputPad, 0));
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), 1, 0));
+				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
 			}
 		}
 	}

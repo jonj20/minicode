@@ -9,6 +9,7 @@ const packages = [
 	{ directory: "packages/agent", name: "@earendil-works/pi-agent-core" },
 	{ directory: "packages/tui", name: "@earendil-works/pi-tui" },
 	{ directory: "packages/coding-agent", name: "@earendil-works/pi-coding-agent" },
+	{ directory: "packages/minicode", name: "@tsi-lab/minicode" },
 ];
 
 const dryRun = process.argv.includes("--dry-run");
@@ -43,7 +44,8 @@ function readPackageJson(directory) {
 	return JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
 }
 
-function assertBuildOutputExists(directory) {
+function assertBuildOutputExists(directory, pkgName) {
+	if (pkgName === "@tsi-lab/minicode") return;
 	if (!existsSync(join(directory, "dist"))) {
 		throw new Error(`${directory}/dist does not exist. Run npm run build before publishing.`);
 	}
@@ -96,7 +98,7 @@ const packageStates = packages.map((pkg) => ({
 }));
 
 for (const pkg of packageStates) {
-	assertBuildOutputExists(pkg.directory);
+	assertBuildOutputExists(pkg.directory, pkg.name);
 	pkg.published = isPublished(pkg.name, pkg.version);
 
 	if (pkg.published) {

@@ -388,7 +388,10 @@ describe("AgentSession prompt characterization", () => {
 	});
 
 	it("throws when prompting without configured auth", async () => {
-		const harness = await createHarness({ withConfiguredAuth: false });
+		const harness = await createHarness({
+			withConfiguredAuth: false,
+			models: [{ id: "remote-model", baseUrl: "https://api.example.com" }],
+		});
 		harnesses.push(harness);
 
 		await expect(harness.session.prompt("hi")).rejects.toThrow(

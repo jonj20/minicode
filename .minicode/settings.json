@@ -1,0 +1,4 @@
+{
+	"shellPath": "D:\\dev\\Git\\bin\\bash.exe",
+	"extensions": ["examples/extensions/small-context-optimizer.ts"]
+}

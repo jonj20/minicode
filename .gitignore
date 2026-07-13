@@ -34,8 +34,13 @@ out.jsonl
 pi-*.html
 out.html
 packages/coding-agent/binaries/
+packages/minicode/build-info.*
+packages/coding-agent/src/embedded.ts
 todo.md
 plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
+
+pi.exe
+minicode.exe

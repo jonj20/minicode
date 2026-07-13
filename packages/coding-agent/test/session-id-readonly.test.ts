@@ -73,16 +73,20 @@ async function runCli(
 
 	let stderr = "";
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...resolvedArgs], {
-			cwd: dirs.projectDir,
-			env: {
-				...process.env,
-				[ENV_AGENT_DIR]: dirs.agentDir,
-				PI_OFFLINE: "1",
-				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
+		const child = spawn(
+			process.execPath,
+			["--experimental-strip-types", "--experimental-transform-types", cliPath, ...resolvedArgs],
+			{
+				cwd: dirs.projectDir,
+				env: {
+					...process.env,
+					[ENV_AGENT_DIR]: dirs.agentDir,
+					PI_OFFLINE: "1",
+					TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
+				},
+				stdio: ["ignore", "ignore", "pipe"],
 			},
-			stdio: ["ignore", "ignore", "pipe"],
-		});
+		);
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
 		});
@@ -106,6 +110,13 @@ describe("--session-id read-only commands", () => {
 
 		expect(result.code).toBe(0);
 		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-help")).toBe(false);
+	});
+
+	it("allows --no-session with --session-id", async () => {
+		const result = await runCli(["--no-session", "--session-id", "ephemeral-id", "--help"]);
+
+		expect(result.code).toBe(0);
+		expect(hasSessionWithId(join(result.agentDir, "sessions"), "ephemeral-id")).toBe(false);
 	});
 
 	it("does not reserve a session for --list-models", async () => {

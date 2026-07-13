@@ -5,6 +5,7 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
+	matchesKey,
 	Spacer,
 	Text,
 	type TUI,
@@ -14,7 +15,7 @@ import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import { rawKeyHint } from "./keybinding-hints.ts";
 
 interface ModelItem {
 	provider: string;
@@ -141,6 +142,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Refresh to pick up any changes to models.json
 		this.modelRegistry.refresh();
 
+		// Probe local LLM endpoints (llama.cpp, Ollama, etc.)
+		await this.modelRegistry.probeLocalModels();
+
 		// Check for models.json errors
 		const loadError = this.modelRegistry.getError();
 		if (loadError) {
@@ -201,7 +205,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private getScopeHintText(): string {
-		return keyHint("tui.input.tab", "scope") + theme.fg("muted", " (all/scoped)");
+		return rawKeyHint("tab", "scope") + theme.fg("muted", " (all/scoped)");
 	}
 
 	private setScope(scope: ModelScope): void {
@@ -285,7 +289,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
-		if (kb.matches(keyData, "tui.input.tab")) {
+		if (matchesKey(keyData, "tab")) {
 			if (this.scopedModelItems.length > 0) {
 				const nextScope: ModelScope = this.scope === "all" ? "scoped" : "all";
 				this.setScope(nextScope);
