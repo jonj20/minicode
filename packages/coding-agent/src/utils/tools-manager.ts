@@ -8,7 +8,7 @@ import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
 
 const TOOLS_DIR = getBinDir();
-const NETWORK_TIMEOUT_MS = 10_000;
+const NETWORK_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 // Mirror sources for GitHub downloads, ordered by priority (npm first)
@@ -36,6 +36,15 @@ interface ToolConfig {
 	systemBinaryNames?: string[]; // Alternative system command names to try before downloading
 	tagPrefix: string; // Prefix for tags (e.g., "v" for v1.0.0, "" for 1.0.0)
 	getAssetName: (version: string, plat: string, architecture: string) => string | null;
+	// Fallback version when GitHub API is unreachable (used for backup mirror downloads)
+	fallbackVersion?: string;
+	// Optional backup mirror for tools that have alternative download sources (e.g., Gitee)
+	backupMirror?: {
+		name: string;
+		// If true, backup URL doesn't need version (e.g., Gitee stores files without version prefix)
+		skipVersion?: boolean;
+		getUrl: (assetName: string) => string;
+	};
 }
 
 const TOOLS: Record<string, ToolConfig> = {
@@ -45,6 +54,7 @@ const TOOLS: Record<string, ToolConfig> = {
 		binaryName: "fd",
 		systemBinaryNames: ["fd", "fdfind"],
 		tagPrefix: "v",
+		fallbackVersion: "10.2.0",
 		getAssetName: (version, plat, architecture) => {
 			if (plat === "darwin") {
 				const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
@@ -58,12 +68,18 @@ const TOOLS: Record<string, ToolConfig> = {
 			}
 			return null;
 		},
+		backupMirror: {
+			name: "gitee",
+			skipVersion: true,
+			getUrl: (assetName: string) => `https://gitee.com/jon.j/RTK/raw/master/${assetName}`,
+		},
 	},
 	rg: {
 		name: "ripgrep",
 		repo: "BurntSushi/ripgrep",
 		binaryName: "rg",
 		tagPrefix: "",
+		fallbackVersion: "14.1.1",
 		getAssetName: (version, plat, architecture) => {
 			if (plat === "darwin") {
 				const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
@@ -79,6 +95,11 @@ const TOOLS: Record<string, ToolConfig> = {
 			}
 			return null;
 		},
+		backupMirror: {
+			name: "gitee",
+			skipVersion: true,
+			getUrl: (assetName: string) => `https://gitee.com/jon.j/RTK/raw/master/${assetName}`,
+		},
 	},
 	rtk: {
 		name: "rtk",
@@ -86,6 +107,7 @@ const TOOLS: Record<string, ToolConfig> = {
 		binaryName: "rtk",
 		systemBinaryNames: ["rtk"],
 		tagPrefix: "v",
+		fallbackVersion: "0.43.0",
 		getAssetName: (_version, plat, architecture) => {
 			if (plat === "darwin") {
 				const archStr = architecture === "arm64" ? "aarch64" : "x86_64";
@@ -98,6 +120,11 @@ const TOOLS: Record<string, ToolConfig> = {
 				return `rtk-${archStr}-pc-windows-msvc.zip`;
 			}
 			return null;
+		},
+		backupMirror: {
+			name: "gitee",
+			skipVersion: true,
+			getUrl: (assetName: string) => `https://gitee.com/jon.j/RTK/raw/master/${assetName}`,
 		},
 	},
 };
@@ -150,7 +177,7 @@ async function getLatestVersion(repo: string): Promise<string> {
 		try {
 			const response = await fetch(mirror.url, {
 				headers: { "User-Agent": `${APP_NAME}-coding-agent` },
-				signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+				signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS * 3), // Use 3x timeout for version check
 			});
 
 			if (response.ok) {
@@ -292,8 +319,18 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	const plat = platform();
 	const architecture = arch();
 
-	// Get latest version
-	let version = await getLatestVersion(config.repo);
+	// Get latest version, fall back to hardcoded version if API is unreachable
+	let version: string;
+	try {
+		version = await getLatestVersion(config.repo);
+	} catch {
+		if (config.fallbackVersion) {
+			version = config.fallbackVersion;
+		} else {
+			throw new Error(`Failed to fetch latest version and no fallback available`);
+		}
+	}
+
 	if (tool === "fd" && plat === "darwin" && architecture === "x64") {
 		version = "10.3.0";
 	}
@@ -307,12 +344,24 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	// Create tools directory
 	mkdirSync(TOOLS_DIR, { recursive: true });
 
-	const originalUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	const archivePath = join(TOOLS_DIR, assetName);
 	const binaryExt = plat === "win32" ? ".exe" : "";
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
 
-	// Try each mirror source until one succeeds
+	// Try backup mirror first if it doesn't need version (e.g., Gitee)
+	if (config.backupMirror?.skipVersion) {
+		const backupUrl = config.backupMirror.getUrl(assetName);
+		try {
+			await downloadFile(backupUrl, archivePath);
+			// Skip GitHub mirrors, go directly to extract
+			return await extractAndInstall(archivePath, assetName, binaryPath, binaryExt, config, plat);
+		} catch {
+			// Backup failed, continue to GitHub mirrors
+		}
+	}
+
+	// Try GitHub mirrors
+	const originalUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	let lastError: Error | null = null;
 	for (const mirror of GITHUB_MIRRORS) {
 		const url = mirror.url(originalUrl);
@@ -322,7 +371,17 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 			break;
 		} catch (e) {
 			lastError = e instanceof Error ? e : new Error(String(e));
-			// Continue to next mirror
+		}
+	}
+
+	// If all GitHub mirrors failed, try backup mirror (e.g., Gitee)
+	if (lastError && config.backupMirror && !config.backupMirror.skipVersion) {
+		try {
+			const backupUrl = config.backupMirror.getUrl(assetName);
+			await downloadFile(backupUrl, archivePath);
+			lastError = null;
+		} catch (e) {
+			lastError = e instanceof Error ? e : new Error(String(e));
 		}
 	}
 
@@ -330,6 +389,18 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 		throw new Error(`Failed to download from all sources: ${lastError.message}`);
 	}
 
+	return await extractAndInstall(archivePath, assetName, binaryPath, binaryExt, config, plat);
+}
+
+// Extract archive and install binary
+async function extractAndInstall(
+	archivePath: string,
+	assetName: string,
+	binaryPath: string,
+	binaryExt: string,
+	config: ToolConfig,
+	plat: string,
+): Promise<string> {
 	// Extract into a unique temp directory. fd and rg downloads can run concurrently
 	// during startup, so sharing a fixed directory causes races.
 	const extractDir = join(

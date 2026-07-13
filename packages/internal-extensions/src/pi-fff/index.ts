@@ -7,9 +7,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, type AutocompleteProvider, Text } from "@earendil-works/pi-tui";
-import type { GrepCursor, GrepMode, GrepResult, MixedItem, SearchResult } from "@ff-labs/fff-node";
-import { FileFinder } from "@ff-labs/fff-node";
 import { Type } from "@sinclair/typebox";
+import type { GrepCursor, GrepMode, GrepResult, MixedItem, SearchResult } from "./fff-node/index.js";
+import { FileFinder } from "./fff-node/index.js";
 import { buildQuery } from "./query";
 
 // ---------------------------------------------------------------------------
@@ -443,10 +443,10 @@ export default function fffExtension(pi: ExtensionAPI) {
 					}
 				}
 			}
-			//if (ctx.hasUI) ctx.ui.notify("[FFF] file search 开始检测是否在位", "info");
+			if (ctx.hasUI) ctx.ui.notify("[FFF] file search 开始检测是否在位", "info");
 			registerAutocompleteProvider(ctx);
 			await ensureFinder(activeCwd);
-			//if (ctx.hasUI) ctx.ui.notify("[FFF] file search 已就绪", "info");
+			if (ctx.hasUI) ctx.ui.notify("[FFF] file search 已就绪", "info");
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
 			console.log(`[FFF] session_start error: ${msg}`);

@@ -271,14 +271,14 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		// Check if rtk needs to be downloaded
 		const needsDownload = !runtimeStatus.rtkAvailable && !runtimeStatus.lastCheckedAt;
 		if (needsDownload && ctx) {
-			//ctx.ui.notify("[RTK] 正在检查 rtk 是否可用...", "info");
+			ctx.ui.notify("[RTK] 正在检查 rtk 是否可用...", "info");
 		}
 
 		await refreshRuntimeStatus();
 
 		if (needsDownload && ctx) {
 			if (runtimeStatus.rtkAvailable) {
-				//ctx.ui.notify("[RTK] rtk 已就绪", "info");
+				ctx.ui.notify("[RTK] rtk 已就绪", "info");
 			}
 		}
 
@@ -360,6 +360,7 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		const reason = runtimeStatus.lastError ? ` (${runtimeStatus.lastError})` : "";
 		const handling = config.mode === "suggest" ? "rewrite suggestions" : "command rewrite";
 		const downloadUrl = "https://github.com/rtk-ai/rtk/releases";
+		const backupUrl = "https://gitee.com/jon.j/RTK";
 		const savePath = "~/.minicode/bin/";
 		const platformHint =
 			process.platform === "win32"
@@ -370,6 +371,7 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		const msg = [
 			`${EXTENSION_NAME}: rtk binary unavailable, ${handling} bypassed${reason}.`,
 			`Download: ${downloadUrl}`,
+			`Backup (China): ${backupUrl}`,
 			`${platformHint}`,
 			`Save rtk binary to: ${savePath}`,
 		].join("\n");
