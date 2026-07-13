@@ -46,8 +46,8 @@ function gitCommit(): string {
  * No tags:                   "abc1234"                → version "0.0.0-202607041828", isStable false
  */
 function parseBuildInfo(describe: string, timestamp: string): { version: string; isStable: boolean } {
-	// Exact tag match: vX.Y.Z or vX.Y.Z-rc.N etc.
-	const exactTag = /^v(\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?)$/;
+	// Exact tag match: vX.Y.Z or vX.Y.Z-rc.N etc. (exclude -dirty, handled separately)
+	const exactTag = /^v(\d+\.\d+\.\d+(-(?!dirty)[a-zA-Z0-9.]+)?)$/;
 	const mExact = describe.match(exactTag);
 	if (mExact) {
 		return { version: mExact[1]!, isStable: !mExact[2] };
@@ -61,11 +61,11 @@ function parseBuildInfo(describe: string, timestamp: string): { version: string;
 		return { version: `${mCommits[1]}-${mCommits[2]}-${timestamp}${suffix}`, isStable: false };
 	}
 
-	// Dirty exact tag: vX.Y.Z-dirty
+	// Dirty exact tag: vX.Y.Z-dirty → treat as stable release (dirty tree doesn't affect version)
 	const dirtyTag = /^v(\d+\.\d+\.\d+)-dirty$/;
 	const mDirty = describe.match(dirtyTag);
 	if (mDirty) {
-		return { version: `${mDirty[1]}-dirty`, isStable: false };
+		return { version: mDirty[1]!, isStable: true };
 	}
 
 	// Fallback: just a hash (no tags), or unknown

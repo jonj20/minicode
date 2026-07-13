@@ -4,6 +4,25 @@
 import type { Model } from "../types.ts";
 
 export const NVIDIA_MODELS = {
+	"abacusai/dracarys-llama-3_1-70b-instruct": {
+		id: "abacusai/dracarys-llama-3_1-70b-instruct",
+		name: "dracarys-llama-3.1-70b-instruct",
+		api: "openai-completions",
+		provider: "nvidia",
+		baseUrl: "https://integrate.api.nvidia.com/v1",
+		headers: {"NVCF-POLL-SECONDS":"3600"},
+		compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
+		reasoning: false,
+		input: ["text"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 128000,
+		maxTokens: 8192,
+	} satisfies Model<"openai-completions">,
 	"meta/llama-3.1-70b-instruct": {
 		id: "meta/llama-3.1-70b-instruct",
 		name: "Llama 3.1 70b Instruct",
@@ -497,6 +516,25 @@ export const NVIDIA_MODELS = {
 		},
 		contextWindow: 256000,
 		maxTokens: 16384,
+	} satisfies Model<"openai-completions">,
+	"upstage/solar-10_7b-instruct": {
+		id: "upstage/solar-10_7b-instruct",
+		name: "solar-10.7b-instruct",
+		api: "openai-completions",
+		provider: "nvidia",
+		baseUrl: "https://integrate.api.nvidia.com/v1",
+		headers: {"NVCF-POLL-SECONDS":"3600"},
+		compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
+		reasoning: false,
+		input: ["text"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 128000,
+		maxTokens: 8192,
 	} satisfies Model<"openai-completions">,
 	"z-ai/glm-5.2": {
 		id: "z-ai/glm-5.2",
