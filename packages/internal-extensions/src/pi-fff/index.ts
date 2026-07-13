@@ -426,9 +426,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		try {
 			activeCwd = ctx.cwd;
 
-			// Restore persisted mode from session entries. This handles session
-			// resume after process restart where env vars are lost, and ensures
-			// the env var is set for the next /reload in the same session.
+			// Restore persisted mode from session entries
 			const entries = ctx.sessionManager?.getEntries();
 			if (entries) {
 				const modeEntry = [...entries]
@@ -445,11 +443,14 @@ export default function fffExtension(pi: ExtensionAPI) {
 					}
 				}
 			}
-
+			//if (ctx.hasUI) ctx.ui.notify("[FFF] file search 开始检测是否在位", "info");
 			registerAutocompleteProvider(ctx);
 			await ensureFinder(activeCwd);
+			//if (ctx.hasUI) ctx.ui.notify("[FFF] file search 已就绪", "info");
 		} catch (e: unknown) {
-			ctx.ui.notify(`FFF init failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+			const msg = e instanceof Error ? e.message : String(e);
+			console.log(`[FFF] session_start error: ${msg}`);
+			if (ctx.hasUI) ctx.ui.notify(`[FFF] 初始化失败: ${msg}`, "error");
 		}
 	});
 

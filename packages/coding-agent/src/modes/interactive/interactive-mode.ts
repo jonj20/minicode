@@ -97,7 +97,7 @@ import { parseGitUrl } from "../../utils/git.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getMinicodeUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
-import { ensureTool } from "../../utils/tools-manager.ts";
+import { ensureFffNativeLib, ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -748,9 +748,14 @@ export class InteractiveMode {
 		// Load changelog (only show new entries, skip for resumed sessions)
 		this.changelogMarkdown = this.getChangelogForDisplay();
 
-		// Ensure fd, rg, and rtk are available (downloads if missing, adds to PATH via getBinDir)
-		// fd for autocomplete, rg for grep tool and bash commands, rtk for command rewriting
-		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg"), ensureTool("rtk", true)]);
+		// Ensure fd, rg, rtk, and fff native library are available (downloads if missing)
+		// fd for autocomplete, rg for grep tool and bash commands, rtk for command rewriting, fff for file search
+		const [fdPath] = await Promise.all([
+			ensureTool("fd"),
+			ensureTool("rg"),
+			ensureTool("rtk", true),
+			ensureFffNativeLib(),
+		]);
 		this.fdPath = fdPath;
 
 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
@@ -2406,6 +2411,7 @@ export class InteractiveMode {
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
 			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
 			setEditorText: (text) => this.editor.setText(text),
+			setEditorHistory: (entries) => this.editor.setHistory?.(entries),
 			setEditorBorderColor: (color) => {
 				if (color) {
 					this.editor.borderColor = color;

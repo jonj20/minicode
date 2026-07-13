@@ -213,6 +213,9 @@ export interface ExtensionUIContext {
 	/** Set the text in the core input editor. */
 	setEditorText(text: string): void;
 
+	/** Replace the core input editor's history (for up/down navigation). */
+	setEditorHistory(entries: string[]): void;
+
 	/** Set the editor border color. Pass undefined to restore default. */
 	setEditorBorderColor(color: ((text: string) => string) | undefined): void;
 

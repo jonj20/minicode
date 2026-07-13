@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
-import { arch, platform } from "os";
+import { arch, homedir, platform } from "os";
 import { join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
@@ -10,6 +10,18 @@ import { APP_NAME, getBinDir } from "../config.ts";
 const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+
+// Mirror sources for GitHub downloads, ordered by priority (npm first)
+const GITHUB_MIRRORS = [
+	{
+		name: "npmmirror",
+		url: (original: string) =>
+			original.replace("https://github.com", "https://registry.npmmirror.com/-/binary/github.com"),
+	},
+	{ name: "ghproxy", url: (original: string) => `https://ghproxy.com/${original}` },
+	{ name: "gh-proxy", url: (original: string) => `https://gh-proxy.com/${original}` },
+	{ name: "github", url: (original: string) => original },
+];
 
 function isOfflineModeEnabled(): boolean {
 	const value = process.env.PI_OFFLINE;
@@ -125,17 +137,32 @@ export function getToolPath(tool: "fd" | "rg" | "rtk"): string | null {
 
 // Fetch latest release version from GitHub
 async function getLatestVersion(repo: string): Promise<string> {
-	const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-		headers: { "User-Agent": `${APP_NAME}-coding-agent` },
-		signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
-	});
+	// Try direct GitHub API first
+	const directUrl = `https://api.github.com/repos/${repo}/releases/latest`;
 
-	if (!response.ok) {
-		throw new Error(`GitHub API error: ${response.status}`);
+	// Try mirrors for API access too
+	const apiMirrors = [
+		{ name: "npmmirror", url: `https://registry.npmmirror.com/-/binary/github.com/repos/${repo}/releases/latest` },
+		{ name: "github", url: directUrl },
+	];
+
+	for (const mirror of apiMirrors) {
+		try {
+			const response = await fetch(mirror.url, {
+				headers: { "User-Agent": `${APP_NAME}-coding-agent` },
+				signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+			});
+
+			if (response.ok) {
+				const data = (await response.json()) as { tag_name: string };
+				return data.tag_name.replace(/^v/, "");
+			}
+		} catch {
+			// Continue to next mirror
+		}
 	}
 
-	const data = (await response.json()) as { tag_name: string };
-	return data.tag_name.replace(/^v/, "");
+	throw new Error(`Failed to fetch latest version from all sources`);
 }
 
 // Download a file from URL
@@ -280,13 +307,28 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	// Create tools directory
 	mkdirSync(TOOLS_DIR, { recursive: true });
 
-	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
+	const originalUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	const archivePath = join(TOOLS_DIR, assetName);
 	const binaryExt = plat === "win32" ? ".exe" : "";
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
 
-	// Download
-	await downloadFile(downloadUrl, archivePath);
+	// Try each mirror source until one succeeds
+	let lastError: Error | null = null;
+	for (const mirror of GITHUB_MIRRORS) {
+		const url = mirror.url(originalUrl);
+		try {
+			await downloadFile(url, archivePath);
+			lastError = null;
+			break;
+		} catch (e) {
+			lastError = e instanceof Error ? e : new Error(String(e));
+			// Continue to next mirror
+		}
+	}
+
+	if (lastError) {
+		throw new Error(`Failed to download from all sources: ${lastError.message}`);
+	}
 
 	// Extract into a unique temp directory. fd and rg downloads can run concurrently
 	// during startup, so sharing a fixed directory causes races.
@@ -386,5 +428,62 @@ export async function ensureTool(tool: "fd" | "rg" | "rtk", silent: boolean = fa
 			console.log(chalk.yellow(`Failed to download ${config.name}: ${e instanceof Error ? e.message : e}`));
 		}
 		return undefined;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FFF native library (fff-bin-<platform>)
+// ---------------------------------------------------------------------------
+
+function getFffBinPackage(): string | null {
+	const plat = platform();
+	const archStr = arch();
+	if (plat === "win32" && archStr === "x64") return "@ff-labs/fff-bin-win32-x64";
+	if (plat === "win32" && archStr === "arm64") return "@ff-labs/fff-bin-win32-arm64";
+	if (plat === "darwin" && archStr === "x64") return "@ff-labs/fff-bin-darwin-x64";
+	if (plat === "darwin" && archStr === "arm64") return "@ff-labs/fff-bin-darwin-arm64";
+	if (plat === "linux" && archStr === "x64") return "@ff-labs/fff-bin-linux-x64-gnu";
+	if (plat === "linux" && archStr === "arm64") return "@ff-labs/fff-bin-linux-arm64-gnu";
+	return null;
+}
+
+function getFffDllPath(): string | null {
+	const pkg = getFffBinPackage();
+	if (!pkg) return null;
+	const home = homedir();
+	const libName = platform() === "win32" ? "fff_c.dll" : `libfff_c.${platform() === "darwin" ? "dylib" : "so"}`;
+	return join(home, ".minicode", "node_modules", pkg, libName);
+}
+
+export async function ensureFffNativeLib(silent: boolean = false): Promise<void> {
+	const dll = getFffDllPath();
+	if (dll && existsSync(dll)) return;
+
+	if (isOfflineModeEnabled()) {
+		if (!silent) console.log(chalk.yellow("[FFF] offline mode, skipping native library download."));
+		return;
+	}
+
+	const pkg = getFffBinPackage();
+	if (!pkg) {
+		if (!silent) console.log(chalk.yellow(`[FFF] unsupported platform ${platform()}/${arch()}`));
+		return;
+	}
+
+	const home = homedir();
+	const minicodeDir = join(home, ".minicode");
+
+	if (!silent) console.log(chalk.dim(`[FFF] 正在安装 native library (${pkg})...`));
+
+	spawnSync("npm", ["install", `${pkg}@0.9.6`, "--no-save", "--prefix", minicodeDir], {
+		timeout: 120_000,
+		stdio: silent ? "pipe" : "inherit",
+	});
+
+	const afterDll = getFffDllPath();
+	if (afterDll && existsSync(afterDll)) {
+		if (!silent) console.log(chalk.dim(`[FFF] native library 安装成功`));
+	} else {
+		if (!silent) console.log(chalk.yellow(`[FFF] native library 安装失败`));
 	}
 }

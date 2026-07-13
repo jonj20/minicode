@@ -383,6 +383,8 @@ export class ModelRegistry {
 	private loadError: string | undefined = undefined;
 	private localModelsConfig: LocalModelsConfig | undefined = undefined;
 	private localModelsProbed = false;
+	/** Keys of models that were actually discovered by probing (alive). */
+	private probedModelKeys = new Set<string>();
 	readonly authStorage: AuthStorage;
 	private modelsJsonPath: string | undefined;
 	private projectModelsJsonPath: string | undefined;
@@ -431,26 +433,34 @@ export class ModelRegistry {
 
 	/**
 	 * Probe local LLM endpoints and merge discovered models into the registry.
-	 * Safe to call multiple times — probing only runs once.
 	 * Returns the number of local models discovered.
 	 *
 	 * Probes:
 	 * 1. Default local endpoints (llama.cpp, Ollama, LM Studio, etc.)
 	 * 2. Endpoints from models.json "localModels.endpoints"
 	 * 3. Endpoints from models.json "providers.*.baseUrl" (for custom servers)
+	 *
+	 * @param force - If true, re-probes even if already probed (for dynamic detection)
 	 */
-	async probeLocalModels(): Promise<number> {
-		if (this.localModelsProbed) return 0;
+	async probeLocalModels(force = false): Promise<number> {
+		if (this.localModelsProbed && !force) return 0;
 		this.localModelsProbed = true;
+
+		// Clear previous probe results when re-probing
+		if (force) this.probedModelKeys.clear();
 
 		try {
 			// Collect provider endpoints from models with localhost URLs
 			const providerEndpoints: { name: string; baseUrl: string }[] = [];
 			const seenProviderUrls = new Set<string>();
 			for (const model of this.models) {
-				if (model.baseUrl && isLocalUrl(model.baseUrl) && !seenProviderUrls.has(model.baseUrl)) {
-					seenProviderUrls.add(model.baseUrl);
-					providerEndpoints.push({ name: model.provider, baseUrl: model.baseUrl });
+				if (model.baseUrl && isLocalUrl(model.baseUrl)) {
+					// Strip /v1 suffix since the prober appends /v1/models
+					const baseUrl = model.baseUrl.replace(/\/v1\/?$/, "");
+					if (!seenProviderUrls.has(baseUrl)) {
+						seenProviderUrls.add(baseUrl);
+						providerEndpoints.push({ name: model.provider, baseUrl });
+					}
 				}
 			}
 
@@ -461,10 +471,23 @@ export class ModelRegistry {
 				const newModels = localModels.filter((m) => !existingKeys.has(`${m.provider}:${m.id}`));
 				this.models.push(...newModels);
 			}
+
+			// Record all probed models (including duplicates that already existed)
+			for (const m of localModels) {
+				this.probedModelKeys.add(`${m.provider}:${m.id}`);
+			}
+
 			return localModels.length;
 		} catch {
 			return 0;
 		}
+	}
+
+	/**
+	 * Check if a model was discovered by probing (alive).
+	 */
+	isProbedModel(provider: string, modelId: string): boolean {
+		return this.probedModelKeys.has(`${provider}:${modelId}`);
 	}
 
 	/**

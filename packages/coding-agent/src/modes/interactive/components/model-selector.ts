@@ -142,8 +142,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Refresh to pick up any changes to models.json
 		this.modelRegistry.refresh();
 
-		// Probe local LLM endpoints (llama.cpp, Ollama, etc.)
-		await this.modelRegistry.probeLocalModels();
+		// Probe local LLM endpoints (llama.cpp, Ollama, etc.) — force re-probe each time
+		// so newly started services are discovered dynamically
+		await this.modelRegistry.probeLocalModels(true);
 
 		// Check for models.json errors
 		const loadError = this.modelRegistry.getError();
@@ -187,12 +188,19 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Sort: current model first, then by provider
 		sorted.sort((a, b) => {
+			// Current model always first
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
 			if (aIsCurrent && !bIsCurrent) return -1;
 			if (!aIsCurrent && bIsCurrent) return 1;
+
+			// Probed (alive) models before non-probed
+			const aIsProbed = this.modelRegistry.isProbedModel(a.provider, a.id);
+			const bIsProbed = this.modelRegistry.isProbedModel(b.provider, b.id);
+			if (aIsProbed && !bIsProbed) return -1;
+			if (!aIsProbed && bIsProbed) return 1;
+
 			return a.provider.localeCompare(b.provider);
 		});
 		return sorted;
@@ -254,12 +262,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				const modelText = `${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+				const alive = this.modelRegistry.isProbedModel(item.provider, item.id) ? theme.fg("success", " ●") : "";
+				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}${alive}`;
 			} else {
 				const modelText = `  ${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${modelText} ${providerBadge}${checkmark}`;
+				const alive = this.modelRegistry.isProbedModel(item.provider, item.id) ? theme.fg("success", " ●") : "";
+				line = `${modelText} ${providerBadge}${checkmark}${alive}`;
 			}
 
 			this.listContainer.addChild(new Text(line, 0, 0));

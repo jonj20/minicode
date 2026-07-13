@@ -248,6 +248,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			} as RpcExtensionUIRequest);
 		},
 
+		setEditorHistory(_entries: string[]): void {
+			// History injection is a no-op in RPC mode
+		},
+
 		getEditorText(): string {
 			// Synchronous method can't wait for RPC response
 			// Host should track editor state locally if needed

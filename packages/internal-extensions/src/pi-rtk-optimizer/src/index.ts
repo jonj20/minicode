@@ -267,7 +267,20 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		const loaded = loadRtkIntegrationConfig();
 		config = loaded.config;
 		pendingLoadWarning = loaded.warning;
+
+		// Check if rtk needs to be downloaded
+		const needsDownload = !runtimeStatus.rtkAvailable && !runtimeStatus.lastCheckedAt;
+		if (needsDownload && ctx) {
+			//ctx.ui.notify("[RTK] 正在检查 rtk 是否可用...", "info");
+		}
+
 		await refreshRuntimeStatus();
+
+		if (needsDownload && ctx) {
+			if (runtimeStatus.rtkAvailable) {
+				//ctx.ui.notify("[RTK] rtk 已就绪", "info");
+			}
+		}
 
 		if (pendingLoadWarning && ctx) {
 			warnOnce(ctx, pendingLoadWarning);

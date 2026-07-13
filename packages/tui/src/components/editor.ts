@@ -390,6 +390,16 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	/** Replace history with entries from an external source (e.g. persistent store). */
+	setHistory(entries: string[]): void {
+		this.history = [...entries].reverse();
+		this.historyIndex = -1;
+		this.historyDraft = null;
+		if (this.history.length > 100) {
+			this.history.length = 100;
+		}
+	}
+
 	private isEditorEmpty(): boolean {
 		return this.state.lines.length === 1 && this.state.lines[0] === "";
 	}

@@ -35,12 +35,26 @@ export interface LocalEndpoint {
 }
 
 interface OpenAIModelsResponse {
-	data?: Array<{ id: string; object?: string }>;
+	data?: Array<{ id: string; object?: string; meta?: { n_ctx?: number; n_ctx_train?: number } }>;
 }
 
 interface OllamaTagsResponse {
 	models?: Array<{ name: string; model?: string; size?: number }>;
 }
+
+interface OllamaShowResponse {
+	model_info?: Record<string, unknown>;
+}
+
+const OLLAMA_CONTEXT_KEYS = [
+	"llama.context_length",
+	"llama.context_length_train",
+	"mixtral.context_length",
+	"gpt_neox.context_length",
+	"qwen2.context_length",
+	"bert.context_length",
+	"nomic-bert.context_length",
+];
 
 /**
  * Probe a single endpoint for available models.
@@ -65,7 +79,7 @@ async function probeEndpoint(endpoint: LocalEndpoint): Promise<Model<Api>[]> {
 		const data = await response.json();
 
 		if (endpoint.format === "ollama") {
-			return parseOllamaResponse(endpoint, data as OllamaTagsResponse);
+			return await parseOllamaResponse(endpoint, data as OllamaTagsResponse);
 		}
 		return parseOpenAIResponse(endpoint, data as OpenAIModelsResponse);
 	} catch {
@@ -78,37 +92,71 @@ function parseOpenAIResponse(endpoint: LocalEndpoint, data: OpenAIModelsResponse
 
 	return data.data
 		.filter((m) => m.object === "model" || m.id)
-		.map((m) => ({
-			id: m.id,
-			name: m.id,
+		.map((m) => {
+			const ctxWindow = m.meta?.n_ctx ?? m.meta?.n_ctx_train ?? 32768;
+			return {
+				id: m.id,
+				name: m.id,
+				provider: endpoint.name,
+				api: "openai-completions" as const,
+				baseUrl: endpoint.baseUrl,
+				input: ["text"] as ("text" | "image")[],
+				reasoning: false,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: ctxWindow,
+				maxTokens: Math.min(ctxWindow, 4096),
+				compat: {},
+			};
+		});
+}
+
+async function parseOllamaResponse(endpoint: LocalEndpoint, data: OllamaTagsResponse): Promise<Model<Api>[]> {
+	if (!data.models || !Array.isArray(data.models)) return [];
+
+	const names = data.models.map((m) => m.name);
+
+	// Fetch context windows for all models in parallel
+	const ctxResults = await Promise.allSettled(
+		names.map(async (name) => {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+			try {
+				const res = await fetch(`${endpoint.baseUrl}/api/show`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ name }),
+					signal: controller.signal,
+				});
+				if (!res.ok) return null;
+				const info = (await res.json()) as OllamaShowResponse;
+				if (!info.model_info) return null;
+				for (const key of OLLAMA_CONTEXT_KEYS) {
+					const val = info.model_info[key];
+					if (typeof val === "number" && val > 0) return val;
+				}
+				return null;
+			} finally {
+				clearTimeout(timer);
+			}
+		}),
+	);
+
+	return names.map((name, i) => {
+		const ctxWindow = (ctxResults[i]?.status === "fulfilled" ? ctxResults[i].value : null) ?? 32768;
+		return {
+			id: name,
+			name,
 			provider: endpoint.name,
 			api: "openai-completions" as const,
-			baseUrl: endpoint.baseUrl,
+			baseUrl: `${endpoint.baseUrl}/v1`,
 			input: ["text"] as ("text" | "image")[],
 			reasoning: false,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 8192,
-			maxTokens: 4096,
+			contextWindow: ctxWindow,
+			maxTokens: Math.min(ctxWindow, 4096),
 			compat: {},
-		}));
-}
-
-function parseOllamaResponse(endpoint: LocalEndpoint, data: OllamaTagsResponse): Model<Api>[] {
-	if (!data.models || !Array.isArray(data.models)) return [];
-
-	return data.models.map((m) => ({
-		id: m.name,
-		name: m.name,
-		provider: endpoint.name,
-		api: "openai-completions" as const,
-		baseUrl: `${endpoint.baseUrl}/v1`,
-		input: ["text"] as ("text" | "image")[],
-		reasoning: false,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 8192,
-		maxTokens: 4096,
-		compat: {},
-	}));
+		};
+	});
 }
 
 export interface LocalModelsConfig {

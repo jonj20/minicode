@@ -63,7 +63,8 @@ export default function (pi: ExtensionAPI) {
 		historyIndex = -1;
 		savedEditorText = "";
 
-		ctx.ui.setStatus("folder-history", history.length > 0 ? `H ${history.length} cmds (ctrl+up/down)` : undefined);
+		ctx.ui.setEditorHistory(history);
+		ctx.ui.setStatus("folder-history", history.length > 0 ? `H ${history.length} cmds` : undefined);
 	});
 
 	pi.on("input", (event, _ctx) => {
