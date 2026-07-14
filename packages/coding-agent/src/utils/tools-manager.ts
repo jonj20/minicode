@@ -3,8 +3,6 @@ import { type SpawnSyncReturns, spawnSync } from "child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
 import { arch, homedir, platform } from "os";
 import { join } from "path";
-import { Readable } from "stream";
-import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
 
 const TOOLS_DIR = getBinDir();
@@ -192,8 +190,12 @@ async function getLatestVersion(repo: string): Promise<string> {
 	throw new Error(`Failed to fetch latest version from all sources`);
 }
 
-// Download a file from URL
-async function downloadFile(url: string, dest: string): Promise<void> {
+// Download a file from URL with progress callback
+async function downloadFile(
+	url: string,
+	dest: string,
+	onProgress?: (downloaded: number, total: number | null) => void,
+): Promise<void> {
 	const response = await fetch(url, {
 		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
 	});
@@ -206,8 +208,35 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 		throw new Error("No response body");
 	}
 
+	const contentLength = response.headers.get("content-length");
+	const total = contentLength ? parseInt(contentLength, 10) : null;
+
+	if (onProgress) {
+		onProgress(0, total);
+	}
+
 	const fileStream = createWriteStream(dest);
-	await pipeline(Readable.fromWeb(response.body as any), fileStream);
+	let downloaded = 0;
+
+	const reader = response.body.getReader();
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		downloaded += value.length;
+		fileStream.write(Buffer.from(value));
+
+		if (onProgress) {
+			onProgress(downloaded, total);
+		}
+	}
+
+	fileStream.end();
+	await new Promise<void>((resolve, reject) => {
+		fileStream.on("finish", resolve);
+		fileStream.on("error", reject);
+	});
 }
 
 function findBinaryRecursively(rootDir: string, binaryFileName: string): string | null {
@@ -311,6 +340,36 @@ function extractZipArchive(archivePath: string, extractDir: string, assetName: s
 	throw new Error(`Failed to extract ${assetName}: ${failures.join("; ")}`);
 }
 
+// Format bytes to human readable
+function formatBytes(bytes: number): string {
+	if (bytes === 0) return "0 B";
+	const k = 1024;
+	const sizes = ["B", "KB", "MB", "GB"];
+	const i = Math.floor(Math.log(bytes) / Math.log(k));
+	return `${parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`;
+}
+
+// Create progress callback for downloads
+function createProgressCallback(mirrorName: string): (downloaded: number, total: number | null) => void {
+	let lastPercent = -1;
+	return (downloaded: number, total: number | null) => {
+		if (total && total > 0) {
+			const percent = Math.floor((downloaded / total) * 100);
+			if (percent !== lastPercent) {
+				process.stdout.write(
+					`\r${chalk.dim(`  [${mirrorName}] ${percent}% (${formatBytes(downloaded)}/${formatBytes(total)})`)}`,
+				);
+				lastPercent = percent;
+			}
+		} else if (downloaded > 0) {
+			// No content-length, just show downloaded size
+			if (downloaded % (1024 * 10) < 1024) {
+				process.stdout.write(`\r${chalk.dim(`  [${mirrorName}] ${formatBytes(downloaded)} downloaded`)}`);
+			}
+		}
+	};
+}
+
 // Download and install a tool
 async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	const config = TOOLS[tool];
@@ -352,7 +411,9 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	if (config.backupMirror?.skipVersion) {
 		const backupUrl = config.backupMirror.getUrl(assetName);
 		try {
-			await downloadFile(backupUrl, archivePath);
+			const progress = createProgressCallback(config.backupMirror.name);
+			await downloadFile(backupUrl, archivePath, progress);
+			process.stdout.write(`\r${" ".repeat(80)}\r`); // Clear progress line
 			// Skip GitHub mirrors, go directly to extract
 			return await extractAndInstall(archivePath, assetName, binaryPath, binaryExt, config, plat);
 		} catch {
@@ -366,7 +427,9 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	for (const mirror of GITHUB_MIRRORS) {
 		const url = mirror.url(originalUrl);
 		try {
-			await downloadFile(url, archivePath);
+			const progress = createProgressCallback(mirror.name);
+			await downloadFile(url, archivePath, progress);
+			process.stdout.write(`\r${" ".repeat(80)}\r`); // Clear progress line
 			lastError = null;
 			break;
 		} catch (e) {
@@ -378,7 +441,9 @@ async function downloadTool(tool: "fd" | "rg" | "rtk"): Promise<string> {
 	if (lastError && config.backupMirror && !config.backupMirror.skipVersion) {
 		try {
 			const backupUrl = config.backupMirror.getUrl(assetName);
-			await downloadFile(backupUrl, archivePath);
+			const progress = createProgressCallback(config.backupMirror.name);
+			await downloadFile(backupUrl, archivePath, progress);
+			process.stdout.write(`\r${" ".repeat(80)}\r`); // Clear progress line
 			lastError = null;
 		} catch (e) {
 			lastError = e instanceof Error ? e : new Error(String(e));
@@ -485,18 +550,18 @@ export async function ensureTool(tool: "fd" | "rg" | "rtk", silent: boolean = fa
 
 	// Tool not found - download it
 	if (!silent) {
-		console.log(chalk.dim(`${config.name} not found. Downloading...`));
+		console.log(chalk.dim(`${config.name} not found. 正在下载...`));
 	}
 
 	try {
 		const path = await downloadTool(tool);
 		if (!silent) {
-			console.log(chalk.dim(`${config.name} installed to ${path}`));
+			console.log(chalk.green(`✓ ${config.name} 下载完成`));
 		}
 		return path;
 	} catch (e) {
 		if (!silent) {
-			console.log(chalk.yellow(`Failed to download ${config.name}: ${e instanceof Error ? e.message : e}`));
+			console.log(chalk.yellow(`${config.name} 下载失败: ${e instanceof Error ? e.message : e}`));
 		}
 		return undefined;
 	}
@@ -531,20 +596,20 @@ export async function ensureFffNativeLib(silent: boolean = false): Promise<void>
 	if (dll && existsSync(dll)) return;
 
 	if (isOfflineModeEnabled()) {
-		if (!silent) console.log(chalk.yellow("[FFF] offline mode, skipping native library download."));
+		if (!silent) console.log(chalk.yellow("[FFF] 离线模式，跳过 native library 下载。"));
 		return;
 	}
 
 	const pkg = getFffBinPackage();
 	if (!pkg) {
-		if (!silent) console.log(chalk.yellow(`[FFF] unsupported platform ${platform()}/${arch()}`));
+		if (!silent) console.log(chalk.yellow(`[FFF] 不支持的平台 ${platform()}/${arch()}`));
 		return;
 	}
 
 	const home = homedir();
 	const minicodeDir = join(home, ".minicode");
 
-	if (!silent) console.log(chalk.dim(`[FFF] 正在安装 native library (${pkg})...`));
+	if (!silent) console.log(chalk.dim(`[FFF] 正在下载 native library (${pkg})...`));
 
 	spawnSync("npm", ["install", `${pkg}@0.9.6`, "--no-save", "--prefix", minicodeDir], {
 		timeout: 120_000,
@@ -553,8 +618,8 @@ export async function ensureFffNativeLib(silent: boolean = false): Promise<void>
 
 	const afterDll = getFffDllPath();
 	if (afterDll && existsSync(afterDll)) {
-		if (!silent) console.log(chalk.dim(`[FFF] native library 安装成功`));
+		if (!silent) console.log(chalk.green(`✓ [FFF] native library 安装成功`));
 	} else {
-		if (!silent) console.log(chalk.yellow(`[FFF] native library 安装失败`));
+		if (!silent) console.log(chalk.yellow(`✗ [FFF] native library 安装失败`));
 	}
 }

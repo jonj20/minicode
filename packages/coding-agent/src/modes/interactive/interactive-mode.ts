@@ -750,12 +750,8 @@ export class InteractiveMode {
 
 		// Ensure fd, rg, rtk, and fff native library are available (downloads if missing)
 		// fd for autocomplete, rg for grep tool and bash commands, rtk for command rewriting, fff for file search
-		const [fdPath] = await Promise.all([
-			ensureTool("fd"),
-			ensureTool("rg"),
-			ensureTool("rtk", true),
-			ensureFffNativeLib(),
-		]);
+		console.log(chalk.dim("Checking fd, rg, rtk, fff valid..."));
+		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg"), ensureTool("rtk"), ensureFffNativeLib()]);
 		this.fdPath = fdPath;
 
 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
