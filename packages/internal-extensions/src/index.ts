@@ -7,6 +7,7 @@ import p2HandoffExtension from "./p2-handoff/index.ts";
 import initExtension from "./p2-init/index.ts";
 import p2SubagentsExtension from "./p2-subagents/src/index.ts";
 import webExtension from "./p2-web-search/index.ts";
+import p2WorkflowExtension from "./p2-workflow/extensions/workflow.ts";
 import btwExtension from "./pi-btw/index.ts";
 import cavemanExtension from "./pi-caveman/index.ts";
 import commandHistoryExtension from "./pi-command-history/index.ts";
@@ -26,20 +27,37 @@ import rtkOptimizerExtension from "./pi-rtk-optimizer/index.ts";
  * Configurable via ~/.minicode/extensions.json.
  * Default: all disabled. Set true to enable.
  */
-const TOOL_EXTENSIONS = new Set(["pi-lens", "pi-goal", "pi-hermes-memory"]);
+const TOOL_EXTENSIONS = new Set(["pi-lens", "pi-goal", "pi-hermes-memory", "p2-workflow"]);
+
+const DEFAULT_CONFIG: Record<string, boolean> = {
+	"pi-lens": false,
+	"pi-goal": false,
+	"pi-hermes-memory": false,
+	"p2-workflow": false,
+};
 
 function loadExtensionsConfig(): Record<string, boolean> {
+	const configDir = path.join(os.homedir(), ".minicode", "agent");
+	const configPath = path.join(configDir, "extensions.json");
+
 	try {
-		const configPath = path.join(os.homedir(), ".minicode", "extensions.json");
 		const raw = fs.readFileSync(configPath, "utf-8");
 		const parsed = JSON.parse(raw) as unknown;
 		if (parsed && typeof parsed === "object") {
 			return parsed as Record<string, boolean>;
 		}
 	} catch {
-		// No config file — use defaults
+		// Config missing or corrupt — create with defaults
 	}
-	return {};
+
+	try {
+		if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+		fs.writeFileSync(configPath, `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`, "utf-8");
+	} catch {
+		// Non-fatal: extensions will use runtime defaults
+	}
+
+	return { ...DEFAULT_CONFIG };
 }
 
 function isExtensionEnabled(name: string, config: Record<string, boolean>): boolean {
@@ -80,4 +98,5 @@ export default function (pi: ExtensionAPI) {
 	load("pi-lens", piLensExtension);
 	load("pi-goal", piGoalExtension);
 	load("pi-hermes-memory", piHermesMemoryExtension);
+	load("p2-workflow", p2WorkflowExtension);
 }

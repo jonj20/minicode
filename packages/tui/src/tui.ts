@@ -489,6 +489,8 @@ export class TUI extends Container {
 	private selectAnchorCol = 0;
 	private selectFocusLine = 0;
 	private selectFocusCol = 0;
+	// Suppress next bracketed paste after a right-click (terminal may also paste on right-click)
+	private suppressNextPaste = false;
 	// Cached visible lines from last render (for copy without re-render)
 	private cachedVisibleLines: string[] = [];
 	// Full scrollable lines from last render (for click position mapping)
@@ -1404,6 +1406,9 @@ export class TUI extends Container {
 
 			// Right-click: copy selection if click is within selected area, otherwise paste in editor
 			if (mouseEvent.button === 2 && !mouseEvent.released) {
+				// Suppress any terminal-initiated paste that follows this right-click.
+				// On Windows, right-click can trigger both a mouse event and a terminal paste.
+				this.suppressNextPaste = true;
 				const clickLine = mouseEvent.row - 1;
 				const hasSelection =
 					this.selectAnchorLine !== this.selectFocusLine || this.selectAnchorCol !== this.selectFocusCol;
@@ -1462,6 +1467,18 @@ export class TUI extends Container {
 			// Filter out key release events unless component opts in
 			if (isKeyRelease(data) && !this.focusedComponent.wantsKeyRelease) {
 				return;
+			}
+			// Suppress terminal-initiated paste that follows a right-click.
+			// On Windows, right-click can trigger both a terminal paste and a mouse event;
+			// the TUI handles the mouse event by injecting a paste, so the terminal's own
+			// paste would cause duplicate content.
+			if (this.suppressNextPaste && data.includes("\x1b[200~")) {
+				this.suppressNextPaste = false;
+				return;
+			}
+			// Clear the flag on any non-paste input so legitimate pastes aren't blocked
+			if (this.suppressNextPaste && !data.includes("\x1b[200~")) {
+				this.suppressNextPaste = false;
 			}
 			this.focusedComponent.handleInput(data);
 			this.requestRender();

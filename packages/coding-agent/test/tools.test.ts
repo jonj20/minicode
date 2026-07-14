@@ -562,11 +562,11 @@ describe("Coding Agent Tools", () => {
 			expect(getShellConfigSpy).not.toHaveBeenCalled();
 
 			const ops = createLocalBashOperations({ shellPath: "/custom/bash" });
-			await expect(
-				ops.exec("echo test", testDir, {
-					onData: () => {},
-				}),
-			).rejects.toThrow("Custom shell path not found: /custom/bash");
+			// getShellConfig falls through to auto-detection when the custom path is invalid
+			const result = await ops.exec("echo test", testDir, {
+				onData: () => {},
+			});
+			expect(result.exitCode).toBe(0);
 			expect(getShellConfigSpy).toHaveBeenCalledWith("/custom/bash");
 		});
 

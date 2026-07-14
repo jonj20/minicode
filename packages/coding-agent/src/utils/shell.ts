@@ -57,11 +57,22 @@ function findBashOnPath(): string | null {
 			});
 			if (result.status === 0 && result.stdout) {
 				const candidates = result.stdout.trim().split(/\r?\n/);
+				// Prefer Git Bash paths (path contains "git") — Git for Windows ships the
+				// most compatible bash on Windows. Other installations (Cygwin, MSYS2, WSL)
+				// are used only when no Git Bash is found.
+				const gitBashCandidates: string[] = [];
+				const otherCandidates: string[] = [];
 				for (const candidate of candidates) {
 					if (candidate && existsSync(candidate) && !isLegacyWslBashPath(candidate)) {
-						return candidate;
+						if (candidate.toLowerCase().includes("git")) {
+							gitBashCandidates.push(candidate);
+						} else {
+							otherCandidates.push(candidate);
+						}
 					}
 				}
+				const ordered = [...gitBashCandidates, ...otherCandidates];
+				if (ordered.length > 0) return ordered[0];
 			}
 		} catch {
 			// Ignore errors
@@ -97,9 +108,17 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		if (existsSync(customShellPath)) {
 			return getBashShellConfig(customShellPath);
 		}
-		throw new Error(`Custom shell path not found: ${customShellPath}`);
+		//console.warn(`[shell] Custom shell path not found: ${customShellPath}. Falling back to auto-detection.`);
 	}
 
+	const resolved = resolveShellConfig(customShellPath);
+	if (customShellPath) {
+		//console.warn(`[shell] Using auto-detected shell: ${resolved.shell}`);
+	}
+	return resolved;
+}
+
+function resolveShellConfig(customShellPath?: string): ShellConfig {
 	if (process.platform === "win32") {
 		// 2. Try Git Bash and other bash installations in known locations
 		const paths: string[] = [];

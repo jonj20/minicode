@@ -28,6 +28,7 @@
     "@sinclair/typebox": "*"
   },
   "dependencies": {
+    "acorn": "8.17.0",
     "@ast-grep/cli": "0.44.0",
     "@ast-grep/napi": "0.44.0",
     "@earendil-works/pi-extension-types": "*",
