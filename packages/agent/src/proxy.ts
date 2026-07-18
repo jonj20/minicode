@@ -349,13 +349,17 @@ function processProxyEvent(
 
 		case "done":
 			partial.stopReason = proxyEvent.reason;
-			partial.usage = proxyEvent.usage;
+			if (proxyEvent.usage) {
+				partial.usage = proxyEvent.usage;
+			}
 			return { type: "done", reason: proxyEvent.reason, message: partial };
 
 		case "error":
 			partial.stopReason = proxyEvent.reason;
 			partial.errorMessage = proxyEvent.errorMessage;
-			partial.usage = proxyEvent.usage;
+			if (proxyEvent.usage) {
+				partial.usage = proxyEvent.usage;
+			}
 			return { type: "error", reason: proxyEvent.reason, error: partial };
 
 		default: {
