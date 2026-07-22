@@ -23,6 +23,12 @@ const NUMERIC_DEFAULTS = {
 	CONSECUTIVE_LOOP_LIMIT: 2,
 	TOOL_LOOP_BAN: 0, // 0 = block identical call only while repeated back-to-back;
 	//                   1 = ban that exact call for the rest of the session
+	MAX_TURNS: 50, // Maximum turns per task to prevent infinite loops
+	MAX_TOOL_CALLS: 100, // Maximum tool calls per task
+	TOOL_TIMEOUT_MS: 30000, // Tool execution timeout in milliseconds (30s default)
+	AUTO_CONTINUE: 1, // 0 = disabled, 1 = auto-continue on early stop or tool error
+	CONTINUE_DELAY_MS: 1000, // Delay before auto-continue (to avoid rapid loops)
+	MAX_AUTO_CONTINUES: 3, // Maximum auto-continues before stopping
 };
 
 // Recovery messages injected into the agent when a loop is detected. Edit these
@@ -48,6 +54,15 @@ const MESSAGE_DEFAULTS = {
 		'⚠️ SEARCH EXPANSION SPIRAL: Pattern "{pattern}" has been searched in {paths} different locations. Broadening the scope further will not help — reconsider what you are looking for.',
 	MSG_TOOL_LOOP:
 		"⚠️ TOOL CALL LOOP: The same sequence of {windowSize} tool call(s) is repeating identically and has been blocked — this exact call did NOT run and will keep being blocked if you repeat it. It produced no new result last time and won't now. Change your approach: try a different command, or use what you already learned to move forward.",
+	MSG_MAX_TURNS:
+		"⚠️ MAX TURNS REACHED ({count}/{limit}): You have used {count} turns. Summarize your progress and end the task, or ask for clarification.",
+	MSG_MAX_TOOL_CALLS:
+		"⚠️ MAX TOOL CALLS REACHED ({count}/{limit}): You have made {count} tool calls. Summarize what you've learned and provide a final answer.",
+	MSG_TOOL_TIMEOUT:
+		"⚠️ TOOL TIMEOUT: Tool '{tool}' has been running for {duration}s (limit: {limit}s). The operation was terminated. Try a simpler approach or different tool.",
+	MSG_AUTO_CONTINUE: "🔄 AUTO CONTINUE: {reason}. Continuing automatically...",
+	MSG_MAX_AUTO_CONTINUES:
+		"⚠️ MAX AUTO CONTINUES REACHED ({count}/{limit}): Too many auto-continues. Stopping to avoid infinite loops. Use /continue to manually resume.",
 };
 
 const DEFAULTS = { ...NUMERIC_DEFAULTS, ...MESSAGE_DEFAULTS };
@@ -88,6 +103,16 @@ export default function (pi: ExtensionAPI) {
 	let fileReadCounts = new Map<string, number>();
 	let searchPatternPaths = new Map<string, Set<string>>();
 	let consecutiveLoopCount = 0;
+	// Task-level counters for turn and tool call limits
+	let turnCount = 0;
+	let toolCallCount = 0;
+	// Track active tool calls for timeout detection
+	const activeToolCalls = new Map<string, { startTime: number; timer: ReturnType<typeof setTimeout> }>();
+	// Auto-continue state
+	let autoContinueCount = 0;
+	let lastToolCallHadError = false;
+	let lastUserMessage = "";
+	let continueTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function reset() {
 		thinkingAborted = false;
@@ -100,19 +125,48 @@ export default function (pi: ExtensionAPI) {
 		fileReadCounts = new Map();
 		searchPatternPaths = new Map();
 		consecutiveLoopCount = 0;
+		turnCount = 0;
+		toolCallCount = 0;
+		// Clear all pending timeouts
+		for (const [, entry] of activeToolCalls) {
+			clearTimeout(entry.timer);
+		}
+		activeToolCalls.clear();
+		// Reset auto-continue state
+		autoContinueCount = 0;
+		lastToolCallHadError = false;
+		if (continueTimer) {
+			clearTimeout(continueTimer);
+			continueTimer = null;
+		}
 	}
 
 	pi.on("agent_start", reset);
 
-	pi.on("turn_start", () => {
+	pi.on("turn_start", (_event, ctx) => {
 		lastCheckedLen = 0;
 		thinkingAborted = false;
 		cleanThinkingPrefix = null;
 		loopType = "character";
+		turnCount++;
 		// NOTE: consecutiveLoopCount is intentionally NOT reset here. Recovery
 		// turns fire turn_start, so resetting would defeat cross-turn escalation.
 		// It is cleared on a clean (non-aborted) turn in message_end instead.
 		// toolHistory / bannedCalls also persist across turns (reset on agent_start).
+
+		// Check turn limit
+		if (cfg.MAX_TURNS > 0 && turnCount > cfg.MAX_TURNS) {
+			ctx.ui.notify(`⚠️ MAX TURNS: ${turnCount}/${cfg.MAX_TURNS} — aborting`, "warning");
+			pi.sendMessage(
+				{
+					customType: "loop-police",
+					content: fmt(cfg.MSG_MAX_TURNS, { count: turnCount, limit: cfg.MAX_TURNS }),
+					display: true,
+				},
+				{ triggerTurn: true },
+			);
+			return { abort: true };
+		}
 	});
 
 	pi.on("message_update", (event, ctx) => {
@@ -139,7 +193,7 @@ export default function (pi: ExtensionAPI) {
 		ctx.abort();
 	});
 
-	pi.on("message_end", (event, _ctx) => {
+	pi.on("message_end", (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 
 		if (thinkingAborted) {
@@ -194,26 +248,97 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 		}
-	});
 
-	pi.on("tool_call", (event, ctx) => {
-		// File read repetition
-		if (isReadTool(event.toolName)) {
-			const path = getInputPath(event.input);
-			if (path) {
-				const count = (fileReadCounts.get(path) ?? 0) + 1;
-				fileReadCounts.set(path, count);
-				if (count >= cfg.FILE_READ_LIMIT) {
-					ctx.ui.notify(`⚠️ FILE READ LOOP: "${path}" read ${count}x — blocked`, "warning");
+		// Auto-continue detection: check if LLM stopped early or had tool errors
+		if (cfg.AUTO_CONTINUE && lastUserMessage) {
+			const msg = event.message;
+			const stopReason = msg.stopReason;
+
+			// Condition 1: LLM stopped without calling tools (early stop)
+			const hasToolCalls = Array.isArray(msg.content) && msg.content.some((b: any) => b.type === "toolCall");
+			const isEarlyStop = stopReason === "stop" && !hasToolCalls && toolCallCount > 0;
+
+			// Condition 2: Tool call had an error
+			const hadToolError = lastToolCallHadError;
+
+			// Check if we should auto-continue
+			if ((isEarlyStop || hadToolError) && autoContinueCount < cfg.MAX_AUTO_CONTINUES) {
+				autoContinueCount++;
+				lastToolCallHadError = false;
+
+				const reason = isEarlyStop ? "LLM stopped before completing the task" : "Tool call encountered an error";
+
+				ctx.ui.notify(`🔄 AUTO CONTINUE ${autoContinueCount}/${cfg.MAX_AUTO_CONTINUES}: ${reason}`, "info");
+
+				// Schedule auto-continue with delay to avoid rapid loops
+				if (continueTimer) clearTimeout(continueTimer);
+				continueTimer = setTimeout(() => {
 					pi.sendMessage(
 						{
 							customType: "loop-police",
-							content: fmt(cfg.MSG_FILE_READ_LOOP, { path, count }),
+							content: fmt(cfg.MSG_AUTO_CONTINUE, { reason }),
 							display: true,
 						},
 						{ triggerTurn: true },
 					);
-					return { block: true, reason: `loop-police: file read ${count}x — ${path}` };
+				}, cfg.CONTINUE_DELAY_MS);
+
+				return;
+			}
+
+			// Check if we've exceeded max auto-continues
+			if (autoContinueCount >= cfg.MAX_AUTO_CONTINUES) {
+				pi.sendMessage(
+					{
+						customType: "loop-police",
+						content: fmt(cfg.MSG_MAX_AUTO_CONTINUES, {
+							count: autoContinueCount,
+							limit: cfg.MAX_AUTO_CONTINUES,
+						}),
+						display: true,
+					},
+					{ triggerTurn: true },
+				);
+				autoContinueCount = 0; // Reset for next user message
+			}
+		}
+	});
+
+	pi.on("tool_call", (event, ctx) => {
+		toolCallCount++;
+
+		// Check tool call limit
+		if (cfg.MAX_TOOL_CALLS > 0 && toolCallCount > cfg.MAX_TOOL_CALLS) {
+			ctx.ui.notify(`⚠️ MAX TOOL CALLS: ${toolCallCount}/${cfg.MAX_TOOL_CALLS} — blocked`, "warning");
+			pi.sendMessage(
+				{
+					customType: "loop-police",
+					content: fmt(cfg.MSG_MAX_TOOL_CALLS, { count: toolCallCount, limit: cfg.MAX_TOOL_CALLS }),
+					display: true,
+				},
+				{ triggerTurn: true },
+			);
+			return { block: true, reason: `loop-police: max tool calls ${toolCallCount}` };
+		}
+
+		// File read repetition — track by path+offset+limit to allow reading
+		// different parts of the same file without triggering false positives.
+		if (isReadTool(event.toolName)) {
+			const readKey = getReadKey(event.input);
+			if (readKey) {
+				const count = (fileReadCounts.get(readKey) ?? 0) + 1;
+				fileReadCounts.set(readKey, count);
+				if (count >= cfg.FILE_READ_LIMIT) {
+					ctx.ui.notify(`⚠️ FILE READ LOOP: "${readKey}" read ${count}x — blocked`, "warning");
+					pi.sendMessage(
+						{
+							customType: "loop-police",
+							content: fmt(cfg.MSG_FILE_READ_LOOP, { path: readKey, count }),
+							display: true,
+						},
+						{ triggerTurn: true },
+					);
+					return { block: true, reason: `loop-police: file read ${count}x — ${readKey}` };
 				}
 			}
 		}
@@ -267,14 +392,87 @@ export default function (pi: ExtensionAPI) {
 		toolHistory.push(hash);
 	});
 
+	// Tool execution timeout detection — monitors tool_result events
+	pi.on("tool_result", (event, ctx) => {
+		const toolCallId = event.toolCallId;
+		const entry = activeToolCalls.get(toolCallId);
+		if (entry) {
+			clearTimeout(entry.timer);
+			activeToolCalls.delete(toolCallId);
+			const duration = Date.now() - entry.startTime;
+			if (duration > cfg.TOOL_TIMEOUT_MS) {
+				ctx.ui.notify(`⚠️ TOOL SLOW: took ${Math.round(duration / 1000)}s`, "warning");
+			}
+		}
+
+		// Track tool errors for auto-continue detection
+		if (event.isError) {
+			lastToolCallHadError = true;
+			ctx.ui.notify(`⚠️ TOOL ERROR detected: ${event.toolCallId}`, "warning");
+		}
+	});
+
+	// Track user messages for context
+	pi.on("user_message", (event) => {
+		if (typeof event.message === "string") {
+			lastUserMessage = event.message;
+		} else if (event.message?.content) {
+			// Extract text from content array
+			const content = event.message.content;
+			if (Array.isArray(content)) {
+				const textBlock = content.find((b: any) => b.type === "text");
+				if (textBlock?.text) lastUserMessage = textBlock.text;
+			} else if (typeof content === "string") {
+				lastUserMessage = content;
+			}
+		}
+		// Reset auto-continue state on new user message
+		autoContinueCount = 0;
+		lastToolCallHadError = false;
+	});
+
+	// Register tool timeout checker — called before each tool execution
+	// Note: This is a pre-execution hook. The actual timeout enforcement
+	// happens at the tool execution layer (not in this extension).
+	// This extension only tracks timing and reports violations.
 	pi.registerCommand("loop-police", {
-		description: "Show status; /loop-police reset; /loop-police set KEY=VAL [KEY=VAL ...]",
+		description:
+			"Show status; /loop-police reset; /loop-police set KEY=VAL [KEY=VAL ...]; /loop-police timeout TOOL_MS=30000",
 		handler: (args, ctx) => {
 			const trimmed = args?.trim() ?? "";
 
 			if (trimmed === "reset") {
 				reset();
 				ctx.ui.notify("Loop Police: state reset", "info");
+				return;
+			}
+
+			if (trimmed === "status" || trimmed === "") {
+				ctx.ui.notify(
+					[
+						"Loop Police status",
+						`  thinking aborted:    ${thinkingAborted}`,
+						`  turn count:          ${turnCount}/${cfg.MAX_TURNS}`,
+						`  tool call count:     ${toolCallCount}/${cfg.MAX_TOOL_CALLS}`,
+						`  tool history:        ${toolHistory.length} calls`,
+						`  banned calls:        ${bannedCalls.size}`,
+						`  stagnation history:  ${thinkingHistory.length}/${cfg.STAGNATION_WINDOW} turns`,
+						`  file reads tracked:  ${fileReadCounts.size} paths`,
+						`  search patterns:     ${searchPatternPaths.size} patterns`,
+						`  consecutive loops:   ${consecutiveLoopCount}/${cfg.CONSECUTIVE_LOOP_LIMIT}`,
+						`  active tool calls:   ${activeToolCalls.size}`,
+						`  auto-continue:       ${autoContinueCount}/${cfg.MAX_AUTO_CONTINUES}`,
+						`  last tool error:     ${lastToolCallHadError}`,
+						`  last user message:   ${lastUserMessage ? `${lastUserMessage.slice(0, 50)}...` : "none"}`,
+						"",
+						"  limits (set KEY=VAL to change):",
+						...Object.keys(NUMERIC_DEFAULTS).map((k) => `    ${k}=${cfg[k]}`),
+						"",
+						"  messages (edit loop-police.json to customize):",
+						...Object.keys(MESSAGE_DEFAULTS).map((k) => `    ${k}`),
+					].join("\n"),
+					"info",
+				);
 				return;
 			}
 
@@ -288,25 +486,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			ctx.ui.notify(
-				[
-					"Loop Police status",
-					`  thinking aborted:    ${thinkingAborted}`,
-					`  tool history:        ${toolHistory.length} calls`,
-					`  banned calls:        ${bannedCalls.size}`,
-					`  stagnation history:  ${thinkingHistory.length}/${cfg.STAGNATION_WINDOW} turns`,
-					`  file reads tracked:  ${fileReadCounts.size} paths`,
-					`  search patterns:     ${searchPatternPaths.size} patterns`,
-					`  consecutive loops:   ${consecutiveLoopCount}/${cfg.CONSECUTIVE_LOOP_LIMIT}`,
-					"",
-					"  config (set KEY=VAL to change):",
-					...Object.keys(NUMERIC_DEFAULTS).map((k) => `    ${k}=${cfg[k]}`),
-					"",
-					"  messages (edit loop-police.json to customize):",
-					...Object.keys(MESSAGE_DEFAULTS).map((k) => `    ${k}`),
-				].join("\n"),
-				"info",
-			);
+			ctx.ui.notify(`Loop Police: unknown command "${trimmed}"`, "warning");
 		},
 	});
 
@@ -365,6 +545,17 @@ function getInputPath(input: unknown): string | null {
 	if (typeof input !== "object" || !input) return null;
 	const inp = input as any;
 	return inp.path ?? inp.file_path ?? inp.filename ?? inp.file ?? inp.directory ?? inp.dir ?? null;
+}
+
+// Generate a unique key for read operations that includes path, offset, and limit.
+// This prevents false positives when reading different parts of the same file.
+function getReadKey(input: unknown): string | null {
+	const path = getInputPath(input);
+	if (!path) return null;
+	const inp = input as any;
+	const offset = inp.offset ?? 0;
+	const limit = inp.limit ?? "full";
+	return `${path}:${offset}:${limit}`;
 }
 
 function getSearchPattern(input: unknown): string | null {

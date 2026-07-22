@@ -82,7 +82,6 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { route as localRoute } from "./local-router/router.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -346,17 +345,6 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
-
-	// Local routing: intercept simple requests before LLM
-	private _localRoutingEnabled = true;
-
-	get localRoutingEnabled(): boolean {
-		return this._localRoutingEnabled;
-	}
-
-	set localRoutingEnabled(val: boolean) {
-		this._localRoutingEnabled = val;
-	}
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -1142,21 +1130,6 @@ export class AgentSession {
 				}
 				preflightResult?.(true);
 				return;
-			}
-
-			// Local routing: intercept simple requests before LLM
-			if (this._localRoutingEnabled && !currentImages) {
-				const { result, messages } = await localRoute(expandedText, this._cwd);
-				if (result.action === "local") {
-					for (const msg of messages) {
-						const agentMsg = msg as AgentMessage;
-						this.agent.state.messages.push(agentMsg);
-						this._emit({ type: "message_start", message: agentMsg });
-						this._emit({ type: "message_end", message: agentMsg });
-					}
-					preflightResult?.(true);
-					return;
-				}
 			}
 
 			// Flush any pending bash messages before the new prompt
