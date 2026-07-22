@@ -22,6 +22,7 @@ import piLoopPoliceExtension from "./pi-loop-police/index.ts";
 import { registerPlanMode } from "./pi-plan-mode/index.ts";
 import rewindExtension from "./pi-rewind/index.ts";
 import rtkOptimizerExtension from "./pi-rtk-optimizer/index.ts";
+import piSafetyNetExtension from "./pi-safety-net/src/pi/index.ts";
 
 /**
  * Extensions that register tools and consume system prompt tokens.
@@ -80,6 +81,9 @@ export default function (pi: ExtensionAPI) {
 
 	// Multi-edit replaces built-in edit tool — always loaded
 	p2MultiEditExtension(pi);
+
+	// Safety net blocks destructive commands — always loaded, no context cost
+	piSafetyNetExtension(pi);
 
 	cavemanExtension(pi);
 	contextCompactExtension(pi);
