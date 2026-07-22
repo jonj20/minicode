@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import contextCompactExtension from "./p2-context-compact/index.ts";
 import p2HandoffExtension from "./p2-handoff/index.ts";
 import initExtension from "./p2-init/index.ts";
+import p2MultiEditExtension from "./p2-multi-edit/index.ts";
 import p2SubagentsExtension from "./p2-subagents/src/index.ts";
 import webExtension from "./p2-web-search/index.ts";
 import p2WorkflowExtension from "./p2-workflow/extensions/workflow.ts";
@@ -76,6 +77,9 @@ export default function (pi: ExtensionAPI) {
 	// Always loaded (no tools, no context cost)
 	// Core platform feature — plan mode (read-only exploration)
 	registerPlanMode(pi);
+
+	// Multi-edit replaces built-in edit tool — always loaded
+	p2MultiEditExtension(pi);
 
 	cavemanExtension(pi);
 	contextCompactExtension(pi);

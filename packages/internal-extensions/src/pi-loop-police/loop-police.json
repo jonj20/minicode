@@ -11,11 +11,22 @@
   "SEARCH_EXPAND_LIMIT": 3,
   "CONSECUTIVE_LOOP_LIMIT": 2,
   "TOOL_LOOP_BAN": 0,
+  "MAX_TURNS": 50,
+  "MAX_TOOL_CALLS": 100,
+  "TOOL_TIMEOUT_MS": 30000,
+  "AUTO_CONTINUE": 1,
+  "CONTINUE_DELAY_MS": 1000,
+  "MAX_AUTO_CONTINUES": 3,
   "MSG_THINKING_LOOP": "⚠️ THINKING LOOP DETECTED: Your thinking block was repeating the same phrases verbatim and has been truncated. Re-examine your approach and continue with the task.",
   "MSG_SEMANTIC_LOOP": "⚠️ SEMANTIC LOOP DETECTED: Your thinking block was cycling through the same reasoning steps repeatedly. The repeated section has been truncated. Step back and try a completely different approach.",
   "MSG_CONSECUTIVE_LOOP": "⚠️ CONSECUTIVE LOOP ({count}x): You have entered a thinking loop {count} times in a row and loop-police has aborted your thinking each time. Stop thinking now — provide a direct answer or ask for clarification.",
   "MSG_STAGNATION": "⚠️ REASONING STAGNATION: Your thinking across the last {window} turns has been {threshold}%+ similar — you are not making progress. Stop and try a fundamentally different approach.",
   "MSG_FILE_READ_LOOP": "⚠️ FILE READ LOOP: \"{path}\" has been read {count} times. Reading it again will not yield new information — use what you already know and move forward.",
   "MSG_SEARCH_SPIRAL": "⚠️ SEARCH EXPANSION SPIRAL: Pattern \"{pattern}\" has been searched in {paths} different locations. Broadening the scope further will not help — reconsider what you are looking for.",
-  "MSG_TOOL_LOOP": "⚠️ TOOL CALL LOOP: The same sequence of {windowSize} tool call(s) is repeating identically and has been blocked — this exact call did NOT run and will keep being blocked if you repeat it. It produced no new result last time and won't now. Change your approach: try a different command, or use what you already learned to move forward."
+  "MSG_TOOL_LOOP": "⚠️ TOOL CALL LOOP: The same sequence of {windowSize} tool call(s) is repeating identically and has been blocked — this exact call did NOT run and will keep being blocked if you repeat it. It produced no new result last time and won't now. Change your approach: try a different command, or use what you already learned to move forward.",
+  "MSG_MAX_TURNS": "⚠️ MAX TURNS REACHED ({count}/{limit}): You have used {count} turns. Summarize your progress and end the task, or ask for clarification.",
+  "MSG_MAX_TOOL_CALLS": "⚠️ MAX TOOL CALLS REACHED ({count}/{limit}): You have made {count} tool calls. Summarize what you've learned and provide a final answer.",
+  "MSG_TOOL_TIMEOUT": "⚠️ TOOL TIMEOUT: Tool '{tool}' has been running for {duration}s (limit: {limit}s). The operation was terminated. Try a simpler approach or different tool.",
+  "MSG_AUTO_CONTINUE": "🔄 AUTO CONTINUE: {reason}. Continuing automatically...",
+  "MSG_MAX_AUTO_CONTINUES": "⚠️ MAX AUTO CONTINUES REACHED ({count}/{limit}): Too many auto-continues. Stopping to avoid infinite loops. Use /continue to manually resume."
 }
