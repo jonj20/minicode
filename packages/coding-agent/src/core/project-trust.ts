@@ -2,12 +2,7 @@ import { CONFIG_DIR_NAME } from "../config.ts";
 import { emitProjectTrustEvent } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
-import {
-	getProjectTrustOptions,
-	hasTrustRequiringProjectResources,
-	type ProjectTrustOption,
-	type ProjectTrustStore,
-} from "./trust-manager.ts";
+import { getProjectTrustOptions, type ProjectTrustOption, type ProjectTrustStore } from "./trust-manager.ts";
 
 export type AppMode = "interactive" | "print" | "json" | "rpc";
 
@@ -46,9 +41,6 @@ function saveProjectTrustPromptResult(trustStore: ProjectTrustStore, result: Pro
 export async function resolveProjectTrusted(options: ResolveProjectTrustedOptions): Promise<boolean> {
 	if (options.trustOverride !== undefined) {
 		return options.trustOverride;
-	}
-	if (!hasTrustRequiringProjectResources(options.cwd)) {
-		return true;
 	}
 
 	if (options.extensionsResult) {

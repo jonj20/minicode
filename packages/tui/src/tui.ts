@@ -2,7 +2,7 @@
  * Minimal TUI implementation with differential rendering
  */
 
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,39 +21,69 @@ import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth
 
 /** Read text from system clipboard (sync). Returns empty string on failure. */
 function readClipboardSync(): string {
-	try {
-		if (process.platform === "win32") {
-			// Force UTF-8 output encoding in case pipe mode defaults to GBK
-			try {
-				const b64 = execSync(
-					'powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard)))"',
-					{ encoding: "utf8", timeout: 2000 },
-				).trim();
-				return Buffer.from(b64, "base64").toString("utf8");
-			} catch {
-				// Fallback: try direct Get-Clipboard with UTF-8 encoding
-				return execSync(
-					'powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-Clipboard)"',
-					{ encoding: "utf8", timeout: 2000 },
-				).trim();
-			}
-		}
-		if (process.platform === "darwin") {
-			return execSync("pbpaste", { encoding: "utf8", timeout: 2000 });
-		}
-		// Linux: try wl-copy, xclip, xsel
+	if (process.platform === "win32") {
+		// Use spawnSync (not execSync) to bypass cmd.exe quoting issues.
+		const opts: {
+			encoding: BufferEncoding;
+			timeout: number;
+			windowsHide: boolean;
+			stdio: ("pipe" | "ignore" | "inherit")[];
+		} = { encoding: "utf8", timeout: 2000, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] };
+		const ps = "powershell.exe";
+		// Method 1: Get-Clipboard with base64 encoding (handles CJK correctly)
 		try {
-			return execSync("wl-paste --no-newline", { encoding: "utf8", timeout: 2000 });
-		} catch {
-			try {
-				return execSync("xclip -selection clipboard -o", { encoding: "utf8", timeout: 2000 });
-			} catch {
-				return execSync("xsel --clipboard --output", { encoding: "utf8", timeout: 2000 });
+			const r = spawnSync(
+				ps,
+				[
+					"-NoProfile",
+					"-Command",
+					'[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $t=Get-Clipboard -Format Text -Raw; if ($null -eq $t -or $t -eq "") { exit 1 }; [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($t))',
+				],
+				opts,
+			);
+			if (r.status === 0 && r.stdout && r.stdout.trim()) {
+				return Buffer.from(r.stdout.trim(), "base64").toString("utf8");
 			}
-		}
-	} catch {
+		} catch {}
+		// Method 2: .NET Windows.Forms API
+		try {
+			const r = spawnSync(
+				ps,
+				[
+					"-NoProfile",
+					"-Command",
+					'Add-Type -AssemblyName System.Windows.Forms; $t=[System.Windows.Forms.Clipboard]::GetText(); if ($null -eq $t -or $t -eq "") { exit 1 }; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Host $t',
+				],
+				opts,
+			);
+			if (r.status === 0 && r.stdout && r.stdout.trim()) {
+				return r.stdout.trim();
+			}
+		} catch {}
+		// Method 3: Get-Clipboard piped to temp file
+		try {
+			const temp = path.join(os.tmpdir(), "minicode_clip.txt");
+			spawnSync(ps, ["-NoProfile", "-Command", `Get-Clipboard | Out-File -Encoding UTF8 "${temp}"`], opts);
+			const text = fs.readFileSync(temp, "utf8").trim();
+			try {
+				fs.unlinkSync(temp);
+			} catch {}
+			if (text) return text;
+		} catch {}
 		return "";
 	}
+	if (process.platform === "darwin") {
+		try {
+			return execSync("pbpaste", { encoding: "utf8", timeout: 2000, windowsHide: true }).trim();
+		} catch {}
+		return "";
+	}
+	for (const cmd of ["wl-paste --no-newline", "xclip -selection clipboard -o", "xsel --clipboard --output"]) {
+		try {
+			return execSync(`${cmd} 2>/dev/null`, { encoding: "utf8", timeout: 2000, windowsHide: true }).trim();
+		} catch {}
+	}
+	return "";
 }
 
 /** Write text to system clipboard (non-blocking fire-and-forget). */
@@ -1406,12 +1436,11 @@ export class TUI extends Container {
 
 			// Right-click: copy selection if click is within selected area, otherwise paste in editor
 			if (mouseEvent.button === 2 && !mouseEvent.released) {
-				// Suppress any terminal-initiated paste that follows this right-click.
-				// On Windows, right-click can trigger both a mouse event and a terminal paste.
 				this.suppressNextPaste = true;
 				const clickLine = mouseEvent.row - 1;
 				const hasSelection =
 					this.selectAnchorLine !== this.selectFocusLine || this.selectAnchorCol !== this.selectFocusCol;
+				const isEditorArea = mouseEvent.row > this.scrollableVisibleHeight;
 				if (hasSelection && this.isInSelection(clickLine, mouseEvent.column - 1)) {
 					this.copyMouseSelection();
 					// Clear selection highlight after copy
@@ -1419,10 +1448,14 @@ export class TUI extends Container {
 					this.selectAnchorCol = 0;
 					this.selectFocusLine = 0;
 					this.selectFocusCol = 0;
-				} else if (mouseEvent.row > this.scrollableVisibleHeight) {
+				} else if (isEditorArea) {
 					const clipText = readClipboardSync();
 					if (clipText.length > 0 && this.focusedComponent?.handleInput) {
 						this.focusedComponent.handleInput(`\x1b[200~${clipText}\x1b[201~`);
+					} else {
+						// Clipboard read failed or is empty — don't suppress the
+						// terminal's own bracketed paste so it can still work.
+						this.suppressNextPaste = false;
 					}
 				}
 				this.requestRender();

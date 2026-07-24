@@ -29,13 +29,22 @@ import piSafetyNetExtension from "./pi-safety-net/src/pi/index.ts";
  * Configurable via ~/.minicode/extensions.json.
  * Default: all disabled. Set true to enable.
  */
-const TOOL_EXTENSIONS = new Set(["pi-lens", "pi-goal", "pi-hermes-memory", "p2-workflow"]);
+const TOOL_EXTENSIONS = new Set([
+	"pi-lens",
+	"pi-goal",
+	"pi-hermes-memory",
+	"p2-workflow",
+	"pi-safety-net",
+	"p2-multi-edit",
+]);
 
 const DEFAULT_CONFIG: Record<string, boolean> = {
 	"pi-lens": false,
 	"pi-goal": false,
 	"pi-hermes-memory": false,
 	"p2-workflow": false,
+	"pi-safety-net": false,
+	"p2-multi-edit": false,
 };
 
 function loadExtensionsConfig(): Record<string, boolean> {
@@ -79,12 +88,7 @@ export default function (pi: ExtensionAPI) {
 	// Core platform feature — plan mode (read-only exploration)
 	registerPlanMode(pi);
 
-	// Multi-edit replaces built-in edit tool — always loaded
-	p2MultiEditExtension(pi);
-
-	// Safety net blocks destructive commands — always loaded, no context cost
-	piSafetyNetExtension(pi);
-
+	cavemanExtension(pi);
 	cavemanExtension(pi);
 	contextCompactExtension(pi);
 	contextUsageExtension(pi);
@@ -103,8 +107,10 @@ export default function (pi: ExtensionAPI) {
 	p2SubagentsExtension(pi);
 
 	// Configurable (register tools, consume context)
+	load("p2-multi-edit", p2MultiEditExtension);
 	load("pi-lens", piLensExtension);
 	load("pi-goal", piGoalExtension);
 	load("pi-hermes-memory", piHermesMemoryExtension);
 	load("p2-workflow", p2WorkflowExtension);
+	load("pi-safety-net", piSafetyNetExtension);
 }

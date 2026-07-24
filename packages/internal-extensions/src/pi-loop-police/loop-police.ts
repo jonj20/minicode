@@ -18,17 +18,17 @@ const NUMERIC_DEFAULTS = {
 	PARA_LOOP_THRESHOLD: 3,
 	STAGNATION_WINDOW: 4,
 	STAGNATION_THRESHOLD: 0.85,
-	FILE_READ_LIMIT: 4,
-	SEARCH_EXPAND_LIMIT: 3,
-	CONSECUTIVE_LOOP_LIMIT: 2,
+	FILE_READ_LIMIT: 10,
+	SEARCH_EXPAND_LIMIT: 5,
+	CONSECUTIVE_LOOP_LIMIT: 3,
 	TOOL_LOOP_BAN: 0, // 0 = block identical call only while repeated back-to-back;
 	//                   1 = ban that exact call for the rest of the session
-	MAX_TURNS: 50, // Maximum turns per task to prevent infinite loops
-	MAX_TOOL_CALLS: 100, // Maximum tool calls per task
-	TOOL_TIMEOUT_MS: 30000, // Tool execution timeout in milliseconds (30s default)
+	MAX_TURNS: 100, // Maximum turns per task (warn only, don't abort)
+	MAX_TOOL_CALLS: 300, // Maximum tool calls per task
+	TOOL_TIMEOUT_MS: 60000, // Tool execution timeout in milliseconds (60s default)
 	AUTO_CONTINUE: 1, // 0 = disabled, 1 = auto-continue on early stop or tool error
 	CONTINUE_DELAY_MS: 1000, // Delay before auto-continue (to avoid rapid loops)
-	MAX_AUTO_CONTINUES: 3, // Maximum auto-continues before stopping
+	MAX_AUTO_CONTINUES: 5, // Maximum auto-continues before stopping
 };
 
 // Recovery messages injected into the agent when a loop is detected. Edit these
@@ -154,18 +154,12 @@ export default function (pi: ExtensionAPI) {
 		// It is cleared on a clean (non-aborted) turn in message_end instead.
 		// toolHistory / bannedCalls also persist across turns (reset on agent_start).
 
-		// Check turn limit
+		// Check turn limit - only warn, don't abort
 		if (cfg.MAX_TURNS > 0 && turnCount > cfg.MAX_TURNS) {
-			ctx.ui.notify(`⚠️ MAX TURNS: ${turnCount}/${cfg.MAX_TURNS} — aborting`, "warning");
-			pi.sendMessage(
-				{
-					customType: "loop-police",
-					content: fmt(cfg.MSG_MAX_TURNS, { count: turnCount, limit: cfg.MAX_TURNS }),
-					display: true,
-				},
-				{ triggerTurn: true },
-			);
-			return { abort: true };
+			// Only warn every 50 turns after exceeding limit
+			if (turnCount % 50 === 0 || turnCount === cfg.MAX_TURNS + 1) {
+				ctx.ui.notify(`⚠️ TURNS: ${turnCount}/${cfg.MAX_TURNS} — continuing`, "warning");
+			}
 		}
 	});
 

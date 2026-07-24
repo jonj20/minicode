@@ -69,6 +69,10 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"stream ended before message_stop",
 	"http2 request did not get a response",
 
+	// Stream response failures from various providers and SDKs.
+	"stream.*fail",
+	"stream.*error",
+
 	// Provider-requested retry delay cap failures should flow through the outer
 	// retry policy so callers can surface/abort the backoff (#1123).
 	"retry delay",

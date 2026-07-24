@@ -343,7 +343,7 @@ describe("package commands", () => {
 	});
 
 	it("allows local package install to initialize fresh project settings", async () => {
-		await main(["install", "-l", packageDir]);
+		await main(["install", "-l", "--approve", packageDir]);
 
 		const settingsPath = join(projectDir, CONFIG_DIR_NAME, "settings.json");
 		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: string[] };

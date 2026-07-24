@@ -3107,6 +3107,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.pendingTools.clear();
+				this.footerDataProvider.clearLastError();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -3257,6 +3258,9 @@ export class InteractiveMode {
 						if (!errorMessage) {
 							errorMessage = this.streamingMessage.errorMessage || "Error";
 						}
+						// Remove error text from chat — show in footer instead
+						this.chatContainer.removeChild(this.streamingComponent);
+						this.footerDataProvider.setLastError(errorMessage);
 						for (const [, component] of this.pendingTools.entries()) {
 							component.updateResult({
 								content: [{ type: "text", text: errorMessage }],
@@ -3265,6 +3269,7 @@ export class InteractiveMode {
 						}
 						this.pendingTools.clear();
 					} else {
+						this.footerDataProvider.clearLastError();
 						// Args are now complete - trigger diff computation for edit tools
 						for (const [, component] of this.pendingTools.entries()) {
 							component.setArgsComplete();
@@ -3383,8 +3388,7 @@ export class InteractiveMode {
 					if (event.reason === "manual") {
 						this.showError(event.errorMessage);
 					} else {
-						this.chatContainer.addChild(new Spacer(1));
-						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+						this.footerDataProvider.setLastError(event.errorMessage);
 					}
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
@@ -4004,6 +4008,7 @@ export class InteractiveMode {
 				const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 				this.showStatus(msg);
 			} else {
+				this.footerDataProvider.clearLastError();
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				const thinkingStr =
@@ -4194,8 +4199,7 @@ export class InteractiveMode {
 	}
 
 	showError(errorMessage: string): void {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0));
+		this.footerDataProvider.setLastError(errorMessage);
 		this.ui.requestRender();
 	}
 

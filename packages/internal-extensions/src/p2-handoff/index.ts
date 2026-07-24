@@ -52,43 +52,26 @@ export default function (pi: ExtensionAPI): void {
 		if (recentToolCalls.length > TOOL_CALL_WINDOW) recentToolCalls.shift();
 	});
 
-	// Detect phase changes and emit spawn requests for p2-subagents
+	// Detect high read density and emit spawn requests for p2-subagents
+	// Only read operations use agents; write operations stay in main context
 	pi.on("turn_end", async (_event, _ctx: ExtensionContext) => {
-		if (recentToolCalls.length < 5) return;
+		if (recentToolCalls.length < 3) return;
 		if (state.pendingTopicBoundaryHint) return;
 
 		const recent = recentToolCalls.slice(-5);
-		const readPhase = recent.filter((t) => ["lsp_navigation", "grep", "read", "glob"].includes(t)).length;
-		const writePhase = recent.filter((t) => ["edit", "write"].includes(t)).length;
+		const readOnlyTools = ["lsp_navigation", "grep", "read", "glob", "find"];
+		const readCount = recent.filter((t) => readOnlyTools.includes(t)).length;
 
-		// Research→execution transition: emit spawn request
-		if (readPhase >= 3 && writePhase >= 2) {
+		// High read density: spawn Explore agent to continue read-only work
+		// This prevents main context pollution from excessive read operations
+		if (readCount >= 3) {
+			const lastTool = recentToolCalls[recentToolCalls.length - 1];
 			pi.events.emit("request-spawn", {
 				type: "Explore",
-				prompt:
-					"Summarize findings from the research phase and identify key files/decisions for the execution phase.",
-				reason: "research-to-execution transition detected",
+				prompt: `Continue the current ${lastTool} task in isolation.`,
+				reason: "high read density detected",
 			});
-			state.pendingTopicBoundaryHint = {
-				from: state.activeNotebookTopic ?? "(research phase)",
-				to: "execution",
-				source: "agent",
-			};
 			recentToolCalls.length = 0;
-		}
-
-		// High tool call density: emit spawn for noisy subtask
-		if (recentToolCalls.length >= 8) {
-			const lastTool = recentToolCalls[recentToolCalls.length - 1];
-			const isNoisy = ["lsp_navigation", "grep", "read", "glob", "bash"].includes(lastTool);
-			if (isNoisy) {
-				pi.events.emit("request-spawn", {
-					type: "Explore",
-					prompt: `Continue the current ${lastTool} task in isolation.`,
-					reason: "high tool call density",
-				});
-				recentToolCalls.length = 0;
-			}
 		}
 	});
 

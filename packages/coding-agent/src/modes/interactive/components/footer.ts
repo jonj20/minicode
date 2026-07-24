@@ -65,6 +65,29 @@ function sanitizeStatusText(text: string): string {
 }
 
 /**
+ * Extract a concise error summary: "statusCode: message"
+ * Strips JSON payloads, prefixes, and wrapping.
+ */
+function extractErrorKey(error: string): string {
+	const cleaned = error.replace(/^Error:\s*/i, "").trim();
+	// Extract optional numeric status code prefix: "402: {json...}"
+	const codeMatch = cleaned.match(/^(\d{3}):\s*(\{.*)/);
+	const code = codeMatch ? codeMatch[1] : "";
+	const body = codeMatch ? codeMatch[2] : cleaned;
+	// Try to parse JSON error body
+	try {
+		const parsed = JSON.parse(body);
+		const msg = parsed.message || parsed.error?.message || parsed.error || "";
+		if (msg) {
+			return code ? `${code}: ${msg}` : String(msg);
+		}
+	} catch {
+		// Not JSON — use as-is
+	}
+	return cleaned.replace(/\s+/g, " ");
+}
+
+/**
  * Format token counts for compact footer display.
  */
 function formatTokens(count: number): string {
@@ -250,10 +273,10 @@ export class FooterComponent implements Component {
 		const dimStatsLeft = theme.fg("dim", statsLeft);
 		const softWhiteLlm = theme.fg("softWhite", llmInfo);
 
-		// When sidebar is present, footer only gets (width - sidebarWidth) columns
-		// Sidebar is 5 chars wide (│ + 4 content chars)
+		// Footer receives width from TUI already accounting for sidebar.
+		// Use the received width directly — no additional subtraction needed.
 		const hasSidebar = !isLegacyWindowsConsole();
-		const footerWidth = hasSidebar ? width - 5 : width;
+		const footerWidth = width;
 
 		const _pwdLine = truncateToWidth(theme.fg("dim", pwd), footerWidth, theme.fg("dim", "..."));
 		// On legacy Windows (no sidebar), show pwd and extension statuses in footer
@@ -284,6 +307,16 @@ export class FooterComponent implements Component {
 				dimHints;
 		}
 		const lines = hasSidebar ? [truncatedLlm, truncatedStats] : [_pwdLine, truncatedLlm, truncatedStats];
+
+		// Append last API error to the first line (auto-clears on success)
+		const lastError = this.footerData.getLastError();
+		if (lastError && lines.length > 0) {
+			const separator = theme.fg("dim", "  |  ");
+			const keyError = extractErrorKey(lastError);
+			const availWidth = Math.max(0, footerWidth - 10);
+			const errorMsg = truncateToWidth(theme.fg("error", keyError), availWidth, theme.fg("error", "…"));
+			lines[0] = lines[0] + separator + errorMsg;
+		}
 
 		if (!hasSidebar) {
 			// Extension statuses — shown in footer when sidebar unavailable

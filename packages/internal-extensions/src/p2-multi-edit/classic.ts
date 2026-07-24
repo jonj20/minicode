@@ -21,6 +21,8 @@ import type { EditItem, EditResult, Workspace } from "./types.ts";
 const normalizeCurlyQuotes = (s: string): string =>
 	s.replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, '"');
 
+const normalizeLineEndings = (s: string): string => s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
 const trimTrailingPerLine = (s: string): string =>
 	s
 		.split("\n")
@@ -38,6 +40,7 @@ const trimTrailingPerLine = (s: string): string =>
 const MATCH_PASSES: readonly ((s: string) => string)[] = [
 	(s) => s, // exact
 	normalizeCurlyQuotes, // curly → straight quotes
+	normalizeLineEndings, // Windows \r\n → Unix \n
 	trimTrailingPerLine, // trailing-whitespace tolerance per line
 ];
 
@@ -76,20 +79,32 @@ export function findActualString(
 		triedContent.add(normContent);
 
 		const pos = normContent.indexOf(normOld, offset);
+
 		if (pos !== -1) {
-			// Map back: the character at `pos` in normalised content corresponds
-			// to the same index in the original (our normalizers preserve length
-			// for all passes except trimTrailingPerLine). For trimEnd we need the
-			// actual substring from original content that matches.
-			const actualOld = content.slice(pos, pos + normOld.length);
-			// Verify the mapped slice actually normalizes to the same thing.
-			if (transform(actualOld) === normOld) {
-				return { pos, actualOldText: actualOld };
+			// If normalizer changed string length on either side, character offsets
+			// don't align 1:1 between original and normalized content.
+			// Use line-aligned search directly.
+			const contentLengthChanged = normContent.length !== content.length;
+			const oldLengthChanged = normOld.length !== oldText.length;
+
+			if (contentLengthChanged || oldLengthChanged) {
+				const match = findByNormalizedLines(content, oldText, offset, transform);
+				if (match) return match;
+			} else {
+				// Map back: the character at `pos` in normalised content corresponds
+				// to the same index in the original (our normalizers preserve length
+				// for all passes except trimTrailingPerLine). For trimEnd we need the
+				// actual substring from original content that matches.
+				const actualOld = content.slice(pos, pos + normOld.length);
+				// Verify the mapped slice actually normalizes to the same thing.
+				if (transform(actualOld) === normOld) {
+					return { pos, actualOldText: actualOld };
+				}
+				// If the lengths shifted (trimEnd can shrink lines), fall back to a
+				// line-aligned search: find the lines in the original content.
+				const match = findByNormalizedLines(content, oldText, offset, transform);
+				if (match) return match;
 			}
-			// If the lengths shifted (trimEnd can shrink lines), fall back to a
-			// line-aligned search: find the lines in the original content.
-			const match = findByNormalizedLines(content, oldText, offset, transform);
-			if (match) return match;
 		}
 	}
 	return undefined;
@@ -106,21 +121,23 @@ function findByNormalizedLines(
 	offset: number,
 	normalize: (s: string) => string,
 ): { pos: number; actualOldText: string } | undefined {
-	const contentLines = content.split("\n");
-	const oldLines = oldText.split("\n");
+	// Split by \n and strip \r to handle Windows line endings
+	const contentLines = content.split("\n").map((l) => l.replace(/\r$/, ""));
+	const oldLines = oldText.split("\n").map((l) => l.replace(/\r$/, ""));
 	if (oldLines.length === 0) return undefined;
 
 	const normOldLines = oldLines.map((l) => normalize(l));
 
-	// Character offset → line index.
+	// Character offset → line index (use original content for offset calculation)
+	const origContentLines = content.split("\n");
 	let charCount = 0;
 	let startLine = 0;
-	for (let i = 0; i < contentLines.length; i++) {
-		if (charCount + contentLines[i].length >= offset) {
+	for (let i = 0; i < origContentLines.length; i++) {
+		if (charCount + origContentLines[i].length >= offset) {
 			startLine = i;
 			break;
 		}
-		charCount += contentLines[i].length + 1; // +1 for \n
+		charCount += origContentLines[i].length + 1; // +1 for \n
 	}
 
 	for (let i = startLine; i <= contentLines.length - oldLines.length; i++) {
@@ -132,12 +149,12 @@ function findByNormalizedLines(
 			}
 		}
 		if (match) {
-			// Compute character position and actual substring from original.
+			// Compute character position using original content lines
 			let pos = 0;
-			for (let k = 0; k < i; k++) pos += contentLines[k].length + 1;
+			for (let k = 0; k < i; k++) pos += origContentLines[k].length + 1;
 			const endLine = i + oldLines.length - 1;
 			let endPos = 0;
-			for (let k = 0; k <= endLine; k++) endPos += contentLines[k].length + 1;
+			for (let k = 0; k <= endLine; k++) endPos += origContentLines[k].length + 1;
 			endPos--; // don't include the final \n after last matched line
 			// If oldText ended with \n, include it.
 			if (oldText.endsWith("\n") && endPos + 1 <= content.length) endPos++;
