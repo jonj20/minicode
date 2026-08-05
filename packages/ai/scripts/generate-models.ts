@@ -15,6 +15,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const packageRoot = join(__dirname, "..");
 
+let modelsDevFetchFailed = false;
+let openRouterFetchFailed = false;
+let aiGatewayFetchFailed = false;
+
 interface ModelsDevModel {
 	id: string;
 	name: string;
@@ -63,6 +67,12 @@ const COPILOT_STATIC_HEADERS = {
 	"Editor-Plugin-Version": "copilot-chat/0.35.0",
 	"Copilot-Integration-Id": "vscode-chat",
 } as const;
+
+// models.dev data is frozen: per-provider catalogs sourced from models.dev
+// are maintained in-tree and never refreshed from the network (models.dev is
+// unreachable in some environments and its data drifts often, breaking
+// committed tests). Flip to true to resume syncing from models.dev.
+const REFRESH_MODELS_DEV = false;
 
 const KIMI_STATIC_HEADERS = {
 	"User-Agent": "KimiCLI/1.5",
@@ -649,6 +659,7 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 		return models;
 	} catch (error) {
 		console.error("Failed to fetch OpenRouter models:", error);
+		openRouterFetchFailed = true;
 		return [];
 	}
 }
@@ -707,6 +718,7 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 		return models;
 	} catch (error) {
 		console.error("Failed to fetch Vercel AI Gateway models:", error);
+		aiGatewayFetchFailed = true;
 		return [];
 	}
 }
@@ -1572,16 +1584,17 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		return models;
 	} catch (error) {
 		console.error("Failed to load models.dev data:", error);
+		modelsDevFetchFailed = true;
 		return [];
 	}
 }
 
 async function generateModels() {
 	// Fetch models from both sources
-	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
+	// models.dev: frozen in-tree when REFRESH_MODELS_DEV is false (see above).
 	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
 	// AI Gateway: OpenAI-compatible catalog with tool-capable models
-	const modelsDevModels = await loadModelsDevData();
+	const modelsDevModels = REFRESH_MODELS_DEV ? await loadModelsDevData() : [];
 	const openRouterModels = await fetchOpenRouterModels();
 	const aiGatewayModels = await fetchAiGatewayModels();
 
@@ -2051,15 +2064,36 @@ async function generateModels() {
 	const sortedProviderIds = Object.keys(providers).sort();
 	const providersDir = join(packageRoot, "src/providers");
 
+	// models.dev-sourced catalogs are frozen in-tree (REFRESH_MODELS_DEV).
+	// When unfrozen, a failed models.dev fetch must not wipe the committed
+	// catalogs it normally owns. OpenRouter and Vercel AI Gateway catalogs are
+	// rewritten only when their own fetch succeeded.
+	const existingCatalogIds = readdirSync(providersDir)
+		.filter((entry) => entry.endsWith(".models.ts"))
+		.map((entry) => entry.slice(0, -".models.ts".length));
+	const preservedCatalogIds = new Set<string>();
+	if (!REFRESH_MODELS_DEV || modelsDevFetchFailed) {
+		for (const providerId of existingCatalogIds) {
+			if (providerId !== "openrouter" && providerId !== "vercel-ai-gateway") {
+				preservedCatalogIds.add(providerId);
+			}
+		}
+	}
+	if (openRouterFetchFailed && existingCatalogIds.includes("openrouter")) preservedCatalogIds.add("openrouter");
+	if (aiGatewayFetchFailed && existingCatalogIds.includes("vercel-ai-gateway")) preservedCatalogIds.add("vercel-ai-gateway");
+
 	// Remove stale per-provider catalogs
 	for (const entry of readdirSync(providersDir)) {
 		if (entry.endsWith(".models.ts")) {
+			const providerId = entry.slice(0, -".models.ts".length);
+			if (preservedCatalogIds.has(providerId)) continue;
 			rmSync(join(providersDir, entry));
 		}
 	}
 
 	// Per-provider catalogs (sorted for deterministic output)
 	for (const providerId of sortedProviderIds) {
+		if (preservedCatalogIds.has(providerId)) continue;
 		const models = providers[providerId];
 		let output = generatedHeader;
 		output += `import type { Model } from "../types.ts";\n\n`;
@@ -2073,18 +2107,19 @@ async function generateModels() {
 	}
 	console.log(`Generated ${sortedProviderIds.length} catalogs under src/providers/`);
 
-	// Aggregator
+	// Aggregator (includes preserved catalogs from failed sources)
+	const allCatalogIds = [...new Set([...sortedProviderIds, ...preservedCatalogIds])].sort();
 	let output = generatedHeader;
-	for (const providerId of sortedProviderIds) {
+	for (const providerId of allCatalogIds) {
 		output += `import { ${catalogConstName(providerId)} } from "./providers/${providerId}.models.ts";\n`;
 	}
 	output += `\nexport const MODELS = {\n`;
-	for (const providerId of sortedProviderIds) {
+	for (const providerId of allCatalogIds) {
 		output += `\t${JSON.stringify(providerId)}: ${catalogConstName(providerId)},\n`;
 	}
 	output += `} as const;\n`;
 	writeFileSync(join(packageRoot, "src/models.generated.ts"), output);
-	console.log("Generated src/models.generated.ts");
+	console.log(`Generated src/models.generated.ts (${allCatalogIds.length} providers)`);
 
 	// Print statistics
 	const totalModels = allModels.length;

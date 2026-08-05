@@ -38,23 +38,6 @@ export const GROQ_MODELS = {
 		contextWindow: 131072,
 		maxTokens: 32768,
 	} satisfies Model<"openai-completions">,
-	"meta-llama/llama-4-scout-17b-16e-instruct": {
-		id: "meta-llama/llama-4-scout-17b-16e-instruct",
-		name: "Llama 4 Scout 17B 16E",
-		api: "openai-completions",
-		provider: "groq",
-		baseUrl: "https://api.groq.com/openai/v1",
-		reasoning: false,
-		input: ["text", "image"],
-		cost: {
-			input: 0.11,
-			output: 0.34,
-			cacheRead: 0,
-			cacheWrite: 0,
-		},
-		contextWindow: 131072,
-		maxTokens: 8192,
-	} satisfies Model<"openai-completions">,
 	"openai/gpt-oss-120b": {
 		id: "openai/gpt-oss-120b",
 		name: "GPT OSS 120B",
@@ -106,9 +89,9 @@ export const GROQ_MODELS = {
 		contextWindow: 131072,
 		maxTokens: 65536,
 	} satisfies Model<"openai-completions">,
-	"qwen/qwen3-32b": {
-		id: "qwen/qwen3-32b",
-		name: "Qwen3-32B",
+	"qwen/qwen3.6-27b": {
+		id: "qwen/qwen3.6-27b",
+		name: "Qwen3.6 27B",
 		api: "openai-completions",
 		provider: "groq",
 		baseUrl: "https://api.groq.com/openai/v1",
@@ -116,12 +99,12 @@ export const GROQ_MODELS = {
 		thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"default"},
 		input: ["text"],
 		cost: {
-			input: 0.29,
-			output: 0.59,
+			input: 0.289,
+			output: 2.4,
 			cacheRead: 0,
 			cacheWrite: 0,
 		},
-		contextWindow: 131072,
+		contextWindow: 262144,
 		maxTokens: 40960,
 	} satisfies Model<"openai-completions">,
 } as const;

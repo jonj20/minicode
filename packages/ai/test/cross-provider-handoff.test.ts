@@ -69,7 +69,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	{ provider: "openai-codex", model: "gpt-5.5", label: "openai-codex-gpt-5.5" },
 	// GitHub Copilot
 	{ provider: "github-copilot", model: "claude-sonnet-4.5", label: "copilot-claude-sonnet-4.5" },
-	{ provider: "github-copilot", model: "gpt-5.1-codex", label: "copilot-gpt-5.1-codex" },
+	{ provider: "github-copilot", model: "gpt-5.4", label: "copilot-gpt-5.4" },
 	{ provider: "github-copilot", model: "gemini-3-flash-preview", label: "copilot-gemini-3-flash-preview" },
 	{ provider: "github-copilot", model: "grok-code-fast-1", label: "copilot-grok-code-fast-1" },
 	// Amazon Bedrock
@@ -109,7 +109,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	// Together AI
 	{ provider: "together", model: "moonshotai/Kimi-K2.6", label: "together-kimi-k2.6" },
 	// Kimi For Coding
-	{ provider: "kimi-coding", model: "k3", label: "kimi-coding-k2-thinking" },
+	{ provider: "kimi-coding", model: "k3", label: "kimi-coding-k3" },
 	// Mistral
 	{ provider: "mistral", model: "devstral-medium-latest", label: "mistral-devstral-medium" },
 	// MiniMax
