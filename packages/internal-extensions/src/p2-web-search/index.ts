@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			"Search the web using DuckDuckGo. Returns titles, snippets, and URLs. " +
+			"Search the web (DuckDuckGo, with Bing and Baidu fallback). Returns titles, snippets, and URLs. " +
 			"Use for finding documentation, API references, error solutions, or any real-time information.",
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query string" }),

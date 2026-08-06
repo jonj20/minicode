@@ -1,6 +1,9 @@
 const DUCKDUCKGO_LITE_URL = "https://lite.duckduckgo.com/lite";
+const BING_SEARCH_URL = "https://www.bing.com/search";
+const BAIDU_SEARCH_URL = "https://www.baidu.com/s";
 const USER_AGENT =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const REQUEST_TIMEOUT_MS = 10000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
 
@@ -118,30 +121,134 @@ function parseLiteResults(html: string): SearchResult[] {
 	return results;
 }
 
+function parseBingResults(html: string): SearchResult[] {
+	const results: SearchResult[] = [];
+	const seen = new Set<string>();
+
+	for (const match of html.matchAll(/<li class="b_algo"[\s\S]*?<\/li>/gi)) {
+		const block = match[0];
+		const link = block.match(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>/i);
+		const titleMatch = block.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+		if (!link || !titleMatch) continue;
+
+		const url = link[1].trim();
+		if (url.includes("/ck/") || seen.has(url)) continue;
+
+		const title = decodeHtmlEntities(titleMatch[1].replace(/<[^>]+>/g, "").trim());
+		if (!title) continue;
+		seen.add(url);
+
+		const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+		const snippet = snippetMatch ? decodeHtmlEntities(snippetMatch[1].replace(/<[^>]+>/g, "").trim()) : "";
+		results.push({ title, snippet, url });
+	}
+
+	return results;
+}
+
+function parseBaiduResults(html: string): SearchResult[] {
+	const results: SearchResult[] = [];
+	const seen = new Set<string>();
+
+	for (const match of html.matchAll(/<h3[^>]*class="[^"]*t[^"]*"[^>]*>([\s\S]*?)<\/h3>/gi)) {
+		const block = match[1];
+		const link = block.match(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+		if (!link) continue;
+
+		const url = link[1].trim();
+		if (!/^https?:\/\//.test(url) || seen.has(url)) continue;
+
+		const title = decodeHtmlEntities(link[2].replace(/<[^>]+>/g, "").trim());
+		if (!title) continue;
+		seen.add(url);
+
+		results.push({ title, snippet: "", url });
+	}
+
+	return results;
+}
+
+async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
+	const formData = new URLSearchParams();
+	formData.append("q", query);
+	formData.append("kl", "wt-wt");
+
+	const response = await fetch(DUCKDUCKGO_LITE_URL, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded",
+			"User-Agent": USER_AGENT,
+		},
+		body: formData.toString(),
+		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+	});
+
+	if (!response.ok) {
+		throw new Error(`Search request failed: ${response.status} ${response.statusText}`);
+	}
+
+	return parseLiteResults(await response.text());
+}
+
+async function searchBing(query: string): Promise<SearchResult[]> {
+	const url = `${BING_SEARCH_URL}?q=${encodeURIComponent(query)}&setlang=en`;
+	const response = await fetch(url, {
+		headers: {
+			"User-Agent": USER_AGENT,
+			"Accept-Language": "en-US,en;q=0.9",
+		},
+		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+	});
+
+	if (!response.ok) {
+		throw new Error(`Search request failed: ${response.status} ${response.statusText}`);
+	}
+
+	return parseBingResults(await response.text());
+}
+
+async function searchBaidu(query: string): Promise<SearchResult[]> {
+	const url = `${BAIDU_SEARCH_URL}?wd=${encodeURIComponent(query)}`;
+	const response = await fetch(url, {
+		headers: {
+			"User-Agent": USER_AGENT,
+			"Accept-Language": "zh-CN,zh;q=0.9",
+		},
+		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+	});
+
+	if (!response.ok) {
+		throw new Error(`Search request failed: ${response.status} ${response.statusText}`);
+	}
+
+	return parseBaiduResults(await response.text());
+}
+
+interface SearchProvider {
+	name: string;
+	search: (query: string) => Promise<SearchResult[]>;
+}
+
+const SEARCH_PROVIDERS: SearchProvider[] = [
+	{ name: "duckduckgo", search: searchDuckDuckGo },
+	{ name: "bing", search: searchBing },
+	{ name: "baidu", search: searchBaidu },
+];
+
 export async function searchWeb(query: string, maxResults: number = 10): Promise<SearchResult[]> {
-	return withRetry(async () => {
-		const formData = new URLSearchParams();
-		formData.append("q", query);
-		formData.append("kl", "wt-wt");
-
-		const response = await fetch(DUCKDUCKGO_LITE_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/x-www-form-urlencoded",
-				"User-Agent": USER_AGENT,
-			},
-			body: formData.toString(),
-			signal: AbortSignal.timeout(15000),
-		});
-
-		if (!response.ok) {
-			throw new Error(`Search request failed: ${response.status} ${response.statusText}`);
+	const errors: string[] = [];
+	for (const provider of SEARCH_PROVIDERS) {
+		try {
+			const results = await provider.search(query);
+			if (results.length > 0) return results.slice(0, maxResults);
+		} catch (err) {
+			errors.push(`${provider.name}: ${err instanceof Error ? err.message : String(err)}`);
 		}
-
-		const html = await response.text();
-		const results = parseLiteResults(html);
-		return results.slice(0, maxResults);
-	}, "web_search");
+	}
+	if (errors.length > 0) {
+		throw new Error(`web_search failed: ${errors.join("; ")}`);
+	}
+	return [];
 }
 
 export async function fetchUrl(url: string): Promise<{ content: string; contentType: string }> {
