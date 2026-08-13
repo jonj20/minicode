@@ -28,19 +28,20 @@
     "@sinclair/typebox": "*"
   },
   "dependencies": {
-    "acorn": "8.17.0",
     "@ast-grep/cli": "0.44.0",
     "@ast-grep/napi": "0.44.0",
     "@earendil-works/pi-extension-types": "*",
     "@modelcontextprotocol/ext-apps": "1.7.4",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "acorn": "8.17.0",
     "croner": "10.0.1",
     "ffi-rs": "1.3.2",
-    "js-yaml": "4.3.0",
+    "js-yaml": "4.3.1",
     "minimatch": "10.2.5",
     "nanoid": "5.1.16",
     "open": "11.0.0",
     "recheck": "4.5.0",
+    "undici": "8.10.0",
     "vscode-jsonrpc": "9.0.0",
     "web-tree-sitter": "0.25.10",
     "zod": "3.25.76"
