@@ -308,15 +308,14 @@ export class FooterComponent implements Component {
 		}
 		const lines = hasSidebar ? [truncatedLlm, truncatedStats] : [_pwdLine, truncatedLlm, truncatedStats];
 
-		// Append last API error to the first line (auto-clears on success)
+		// Show last API error on its own footer line (clears on success)
 		const lastError = this.footerData.getLastError();
-		if (lastError && lines.length > 0) {
-			const separator = theme.fg("dim", "  |  ");
+		if (lastError) {
 			const keyError = extractErrorKey(lastError);
-			const availWidth = Math.max(0, footerWidth - 10);
-			const errorMsg = truncateToWidth(theme.fg("error", keyError), availWidth, theme.fg("error", "…"));
-			lines[0] = lines[0] + separator + errorMsg;
+			const errorMsg = truncateToWidth(theme.fg("error", keyError), footerWidth, theme.fg("error", "…"));
+			lines.push(errorMsg);
 		}
+
 
 		if (!hasSidebar) {
 			// Extension statuses — shown in footer when sidebar unavailable
