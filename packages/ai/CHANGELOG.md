@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed context token estimation to ignore stale assistant usage that predates a newer compaction-summary message, preventing artificially lowered output limits after compaction.
+- Fixed context token estimation to count tool definitions added mid-session (via `ToolResultMessage.addedToolNames`) so the output cap is not overestimated after tools become available.
+- Added `isRecoverableLength` to detect truncated responses whose output stopped below the requested limit, enabling caller-side compact-and-retry recovery.
 - Fixed GitHub Copilot device-code login polling to wait before the first token poll, avoiding incorrect device-code failures for some users after browser authorization ([#6187](https://github.com/earendil-works/pi/issues/6187)).
 - Fixed OAuth device-code polling to honor the server-provided `slow_down` interval instead of only applying the RFC 8628 5-second increment, so GitHub Copilot login recovers instead of appearing to hang when polls arrive early (e.g. WSL/VM clock drift) ([#6187](https://github.com/earendil-works/pi/issues/6187)).
 - Fixed OpenAI Codex user-agent construction to synchronously load Node OS metadata, avoiding a startup race that could report `pi (browser)` in Node/Bun.

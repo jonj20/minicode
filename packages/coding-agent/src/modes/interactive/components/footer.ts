@@ -316,7 +316,6 @@ export class FooterComponent implements Component {
 			lines.push(errorMsg);
 		}
 
-
 		if (!hasSidebar) {
 			// Extension statuses — shown in footer when sidebar unavailable
 			const extensionStatuses = this.footerData.getExtensionStatuses();
